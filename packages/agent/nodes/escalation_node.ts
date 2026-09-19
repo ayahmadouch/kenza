@@ -50,9 +50,9 @@ const SAFE: Record<string, Record<Langue, string>> = {
     darija: "Ma l9itch had l produit f catalogue dyalna. Ghadi nssift talab dyalek l commerçant bach ychouf m3ak.",
   },
   llm_indisponible: {
-    fr: "Je vais transmettre votre demande à notre équipe afin qu'elle puisse vous répondre correctement.",
-    ar: "سأحيل طلبكم إلى فريقنا حتى يتمكن من الرد عليكم بشكل صحيح.",
-    darija: "Ghadi nssift talab dyalek l l'équipe dyalna bach ijawbouk mzyan.",
+    fr: "Je ne peux pas finaliser cette demande maintenant. Je la transmets au commerçant avec le contexte de notre échange.",
+    ar: "لا أستطيع إتمام هذا الطلب الآن. سأحيله إلى التاجر مع تفاصيل محادثتنا.",
+    darija: "Ma nqdertch nkemmel talab daba. Ghadi nssifto l commerçant m3a ga3 tafasil dyal lhadra dyalna.",
   },
   service_multimodal_indisponible: {
     fr: "Je n'ai pas réussi à traiter votre fichier (note vocale ou photo). Pouvez-vous m'écrire votre demande en texte ? Je transmets aussi à l'équipe pour qu'elle vous aide.",
@@ -60,9 +60,9 @@ const SAFE: Record<string, Record<Langue, string>> = {
     darija: "Ma 9dertch nfhem l fichier (vocal wla tswira). Wach t9der tktb liya talab dyalek? Ghadi nssift l équipe tan.",
   },
   default: {
-    fr: "Je transmets votre demande à notre équipe pour qu'elle puisse vous répondre précisément. Elle revient vers vous rapidement, avec tout le contexte.",
-    ar: "سأحيل طلبكم إلى فريقنا حتى يتمكن من الرد عليكم بدقة. سيتواصل معكم قريبا مع كامل السياق.",
-    darija: "Ghadi nssift talab dyalek l l'équipe bach ijawbouk b dqa. Ghadi yjiwek 9rib m3a ga3 l contexte.",
+    fr: "Je transmets votre demande au commerçant avec tout le contexte pour qu'il vous réponde précisément.",
+    ar: "سأحيل طلبكم إلى التاجر مع كامل التفاصيل ليجيبكم بدقة.",
+    darija: "Ghadi nssift talab dyalek l commerçant m3a ga3 l contexte bach yjawbek b dqa.",
   },
 };
 

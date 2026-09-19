@@ -140,6 +140,31 @@ export function looksLikeConfirmation(text: string): boolean {
   return !NEGATE.some((re) => re.test(f) || re.test(a));
 }
 
+/** Achat explicite : le parcours catalogue ne doit pas être remplacé par une escalade. */
+export function wantsToBuy(text: string): boolean {
+  const f = foldText(text);
+  const a = normalizeArabizi(text);
+  return /\b(?:acheter|achete|achète|commander|commande|reserver|réserver|prendre|prends|je la prends|je le prends|je veux acheter)\b/.test(f)
+    || /\b(?:nakhod|nkhod|sajel|nsajel|bghit nchri|bghit nakhod)\b/.test(a)
+    || /(?:اريد شراء|أريد شراء|بغيت نشري|بغيت ناخد|ناخذ|نشري)/.test(text);
+}
+
+/** Demande explicite d'affichage de produits, sans filtre obligatoire. */
+export function wantsCatalog(text: string): boolean {
+  const f = foldText(text);
+  const a = normalizeArabizi(text);
+  return /(?:affiche|montre|voir|consulter|propose|presente|catalogue|ctalogue|lctalogue|produits|articles|modeles|collection)/.test(f)
+    || /(?:wrini|werini|bayan|catalogue|ctalogue|lctalogue|produits|modeles|lmodيلات)/.test(a)
+    || /(?:ارني|أرني|اعرض|أعرض|الكتالوج|المنتجات|الموديلات)/.test(text);
+}
+
+/** Consultation déterministe d'une référence ou de sa disponibilité. */
+export function wantsProductLookup(text: string): boolean {
+  const f = foldText(text);
+  return /\bref[- ]?\d{4}\b/i.test(text)
+    || /(?:dispo|disponible|rupture|stock|prix|taman|chhal|combien|acheter|prends?)/.test(f);
+}
+
 export interface MessageAnalysis {
   escalation: EscalationTrigger | null;
   discountPct: number | null;

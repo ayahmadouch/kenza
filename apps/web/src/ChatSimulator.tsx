@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WS_URL, apiGet, apiPost, mad, type CartItem, type ChatMessage, type Client, type ConversationRow } from "./api";
-import AgentGraph from "./AgentGraph";
 import ProductCards, { productsFromTrace } from "./ProductCards";
 import { Icon, Khatam, RevealText } from "./ui";
 
@@ -24,23 +23,22 @@ const SCENARIOS: { label: string; text: string }[] = [
 
 const b64 = (file: Blob) => new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] ?? ""); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
 const newConvId = (clientId: string) => `web-${clientId}-${Date.now().toString(36)}`;
+const savedClient = (): Client | null => {
+  try { return JSON.parse(localStorage.getItem("kenza-client") ?? "null") as Client | null; } catch { return null; }
+};
 
-export default function ChatSimulator() {
-  const [clients, setClients] = useState<Client[]>([]);
-  const [query, setQuery] = useState("");
-  const [client, setClient] = useState<Client | null>(null);
+export default function ChatSimulator({ demoMode = false }: { demoMode?: boolean }) {
+  const [client, setClient] = useState<Client | null>(savedClient);
   const [convId, setConvId] = useState<string>("");
   const [previous, setPrevious] = useState<ConversationRow[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [detail, setDetail] = useState<ConvDetail | null>(null);
   const [pending, setPending] = useState<string | null>(null);
-  const [nodes, setNodes] = useState<string[]>([]);
   const [text, setText] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
   const [online, setOnline] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
-  const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ nom: "", telephone: "", ville: "", langue: "darija" });
   const [lastOrder, setLastOrder] = useState<string | null>(null);
   const [freshId, setFreshId] = useState<number | null>(null);
@@ -52,11 +50,6 @@ export default function ChatSimulator() {
   convRef.current = convId;
 
   // ------------------------------------------------------------ données
-  const loadClients = useCallback(async (q = "") => {
-    try { setClients(await apiGet<Client[]>(`/api/clients?q=${encodeURIComponent(q)}`)); } catch (e) { setError((e as Error).message); }
-  }, []);
-  useEffect(() => { const t = setTimeout(() => void loadClients(query), 200); return () => clearTimeout(t); }, [query, loadClients]);
-
   const refresh = useCallback(async (): Promise<ChatMessage[]> => {
     const id = convRef.current;
     if (!id) return [];
@@ -83,11 +76,10 @@ export default function ChatSimulator() {
       s.onclose = () => { setOnline(false); if (!closed) timer = setTimeout(connect, 1500); };
       s.onmessage = (e) => {
         const ev = JSON.parse(String(e.data)) as WsEvent;
-        if (ev.type === "node" && ev.node) setNodes((n) => [...n, ev.node!]);
         if (ev.type === "agent_message" || ev.type === "human_mode" || ev.type === "error") {
           if (ev.type === "error") setError(ev.message ?? "Erreur");
           if (ev.orderId) setLastOrder(ev.orderId);
-          setPending(null); setNodes([]);
+          setPending(null);
           void refresh().then((list) => { const last = [...list].reverse().find((m) => m.role === "agent"); if (last) { setSelected(last.id); if (ev.type === "agent_message") setFreshId(last.id); } });
         }
       };
@@ -98,18 +90,24 @@ export default function ChatSimulator() {
 
   // ------------------------------------------------------------ actions
   const startConversation = useCallback(async (c: Client) => {
+    localStorage.setItem("kenza-client-id", c.client_id);
+    localStorage.setItem("kenza-client", JSON.stringify(c));
     setClient(c); setError(null); setLastOrder(null); setSelected(null); setFreshId(null); setMessages([]); setDetail(null);
     const id = newConvId(c.client_id);
     setConvId(id); convRef.current = id;
     try { setPrevious((await apiGet<ConversationRow[]>("/api/conversations")).filter((x) => x.client_id === c.client_id)); } catch { setPrevious([]); }
   }, []);
 
+  useEffect(() => {
+    if (client && !convId) void startConversation(client);
+  }, [client, convId, startConversation]);
+
   const openPrevious = (id: string) => { setConvId(id); convRef.current = id; setSelected(null); setLastOrder(null); void refresh(); };
 
   const send = (payload: Record<string, unknown>, preview: string) => {
     if (!client || !convId) return;
     if (ws.current?.readyState !== 1) { setError("Connexion WebSocket indisponible, nouvelle tentative…"); return; }
-    setError(null); setPending(preview); setNodes([]);
+    setError(null); setPending(preview);
     ws.current.send(JSON.stringify({ conversationId: convId, clientId: client.client_id, telephone: client.telephone, ...payload }));
   };
   const sendText = (t?: string) => { const v = (t ?? text).trim(); if (!v) return; send({ type: "text", text: v }, v); setText(""); };
@@ -128,9 +126,13 @@ export default function ChatSimulator() {
   };
 
   const createClient = async () => {
+    if (!form.nom.trim() || !form.telephone.trim()) {
+      setError("Indiquez votre nom et votre téléphone pour commencer.");
+      return;
+    }
     try {
       const c = await apiPost<Client>("/api/clients", { nom: form.nom, telephone: form.telephone, ville: form.ville || undefined, langue: form.langue });
-      setShowNew(false); setForm({ nom: "", telephone: "", ville: "", langue: "darija" }); await loadClients(query); await startConversation(c);
+      setForm({ nom: "", telephone: "", ville: "", langue: "darija" }); await startConversation(c);
     } catch (e) { setError((e as Error).message); }
   };
 
@@ -138,35 +140,10 @@ export default function ChatSimulator() {
   const cartTotal = (detail?.cart ?? []).reduce((s, i) => s + i.qte * i.prix_unitaire, 0);
 
   // ------------------------------------------------------------ rendu
-  const initials = (n: string) => n.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   const busy = !!pending;
 
   return (
     <div className="chat-layout">
-      <aside className="clients">
-        <div className="row-between"><h2 className="side-title">Clients</h2><button className="link-btn" onClick={() => setShowNew((v) => !v)}>{showNew ? "Annuler" : "Nouveau client"}</button></div>
-        {showNew && (
-          <div className="new-client">
-            <input className="input" placeholder="Nom" value={form.nom} onChange={(e) => setForm({ ...form, nom: e.target.value })} />
-            <input className="input" placeholder="Téléphone, ex. +212612345678" value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} />
-            <input className="input" placeholder="Ville (facultatif)" value={form.ville} onChange={(e) => setForm({ ...form, ville: e.target.value })} />
-            <select className="input" value={form.langue} onChange={(e) => setForm({ ...form, langue: e.target.value })}><option value="darija">Darija</option><option value="fr">Français</option><option value="ar">Arabe</option></select>
-            <button className="btn btn-primary" onClick={() => void createClient()}>Créer et discuter</button>
-          </div>
-        )}
-        <input className="input" placeholder="Chercher un nom ou un numéro" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <div className="client-list">
-          {clients.map((c) => (
-            <button key={c.client_id} className={`client-row ${client?.client_id === c.client_id ? "selected" : ""}`} onClick={() => void startConversation(c)}>
-              <span className={`avatar lang-${c.langue_preferee ?? "fr"}`}>{initials(c.nom)}</span>
-              <span className="client-txt"><span className="client-name">{c.nom}</span><span className="client-meta">{c.ville ?? "Ville inconnue"}, {c.nb_commandes} commande{c.nb_commandes > 1 ? "s" : ""}</span></span>
-              <span className="lang-tag">{c.langue_preferee === "darija" ? "DAR" : (c.langue_preferee ?? "fr").toUpperCase()}</span>
-            </button>
-          ))}
-          {clients.length === 0 && <div className="muted small pad">Aucun client trouvé.</div>}
-        </div>
-      </aside>
-
       <section className="phone">
         <header className="phone-head">
           <span className={`kenza-avatar ${busy ? "busy" : ""}`}><Khatam size={26} fill="var(--safran)" spin={busy} /></span>
@@ -187,19 +164,27 @@ export default function ChatSimulator() {
         </header>
 
         {detail?.human_active && <div className="banner banner-warn">Un conseiller a pris la main : Kenza est en pause sur cette conversation.</div>}
-        {lastOrder && <div className="banner banner-good"><Icon name="check" size={16} /> Commande <b>{lastOrder}</b> enregistrée en base, visible dans « Commandes ».</div>}
+        {lastOrder && <div className="banner banner-good"><Icon name="check" size={16} /> Kenza a confirmé votre achat. Commande <b>{lastOrder}</b> enregistrée en base.</div>}
 
         <div className="messages">
           {!client && (
             <div className="hero">
               <Khatam size={92} fill="var(--majorelle)" spin className="hero-star" />
-              <h1 className="hero-title">Écrivez comme le ferait un client.</h1>
+              <h1 className="hero-title">Parlez avec Kenza.</h1>
               <div className="hero-langs" aria-label="Exemples de messages">
                 <span dir="ltr">chhal taman had robe ?</span>
                 <span dir="rtl" lang="ar">كم ثمن هذا الفستان؟</span>
                 <span dir="ltr">c'est combien, en taille M ?</span>
               </div>
-              <p className="hero-copy">Choisissez un client à gauche. Kenza cherche dans le vrai catalogue, vérifie le stock et crée la commande.</p>
+              <p className="hero-copy">Kenza cherche dans le vrai catalogue, vérifie le stock et prépare votre commande.</p>
+              <div className="customer-form">
+                <div className="customer-form-title">Vos informations</div>
+                <input className="input" placeholder="Votre nom" value={form.nom} onChange={(e) => setForm({ ...form, nom: e.target.value })} autoComplete="name" />
+                <input className="input" placeholder="Téléphone, ex. +212612345678" value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} autoComplete="tel" />
+                <input className="input" placeholder="Ville de livraison" value={form.ville} onChange={(e) => setForm({ ...form, ville: e.target.value })} />
+                <select className="input" value={form.langue} onChange={(e) => setForm({ ...form, langue: e.target.value })} aria-label="Langue préférée"><option value="darija">Darija</option><option value="fr">Français</option><option value="ar">Arabe</option></select>
+                <button className="btn btn-primary" onClick={() => void createClient()}>Commencer avec Kenza</button>
+              </div>
             </div>
           )}
           {client && messages.length === 0 && !busy && (
@@ -236,8 +221,9 @@ export default function ChatSimulator() {
         </div>
 
         {error && <div className="banner banner-warn" onClick={() => setError(null)} role="alert">{error}</div>}
-        {client && (
-          <div className="scenario-bar" aria-label="Scénarios de démonstration">
+        {demoMode && client && (
+          <div className="scenario-bar" aria-label="Scénarios de démonstration du jury">
+            <span className="scenario-label">Tests jury</span>
             {SCENARIOS.map((s) => <button key={s.label} className="scenario" disabled={busy} onClick={() => sendText(s.text)} title={s.text}>{s.label}</button>)}
           </div>
         )}
@@ -245,15 +231,13 @@ export default function ChatSimulator() {
           <label className={`icon-btn ${!client || busy ? "disabled" : ""}`} title="Envoyer une photo de produit"><Icon name="image" /><input hidden type="file" accept="image/*" disabled={!client || busy} onChange={(e) => { void onImage(e.target.files?.[0]); e.target.value = ""; }} /></label>
           <button className={`icon-btn ${recording ? "rec" : ""}`} title={recording ? "Arrêter et envoyer" : "Enregistrer une note vocale"} aria-label="Note vocale" disabled={!client || busy} onClick={() => void toggleRecord()}><Icon name={recording ? "stop" : "mic"} /></button>
           <label className={`link-btn attach ${!client || busy ? "disabled" : ""}`} title="Envoyer un fichier audio">Fichier audio<input hidden type="file" accept="audio/*" disabled={!client || busy} onChange={(e) => { void onAudioFile(e.target.files?.[0]); e.target.value = ""; }} /></label>
-          <input className="compose-input" dir="auto" placeholder={client ? "Écrivez en français, en arabe ou en darija" : "Choisissez d'abord un client"} disabled={!client || busy} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendText()} />
+          <input className="compose-input" dir="auto" placeholder={client ? "Écrivez en français, en arabe ou en darija" : "Renseignez vos informations pour commencer"} disabled={!client || busy} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendText()} />
           <button className="send" aria-label="Envoyer" disabled={!client || busy || !text.trim()} onClick={() => sendText()}><Icon name="send" size={18} /></button>
         </div>
       </section>
 
       <aside className="mind">
-        <h2 className="side-title">Ce que fait Kenza</h2>
-        <AgentGraph trace={busy ? null : selMsg?.trace} guardrail={busy ? null : selMsg?.guardrail} latency={busy ? null : selMsg?.latency_ms} live={nodes} running={busy} />
-        <h2 className="side-title spaced">Panier</h2>
+        <h2 className="side-title">Votre panier</h2>
         {detail && detail.cart.length > 0 ? (
           <div className="ticket">
             {detail.cart.map((i) => <div key={i.ref} className="ticket-line"><div><b>{i.modele}</b><div className="muted tiny">{i.ref}, taille {i.taille}, quantité {i.qte}</div></div><span className="money">{mad(i.prix_unitaire * i.qte)}</span></div>)}
@@ -262,7 +246,7 @@ export default function ChatSimulator() {
           </div>
         ) : <div className="muted small">Le panier est vide.</div>}
         {detail?.escalations && detail.escalations.length > 0 && (
-          <div className="esc-box"><b className="small">Transmis au commerçant</b>{detail.escalations.slice(0, 2).map((e) => <div key={e.id} className="small esc-line"><span className={`chip ${e.statut === "RESOLVED" ? "chip-good" : "chip-warn"}`}>{e.statut === "RESOLVED" ? "Résolu" : "À traiter"}</span> {e.motif}</div>)}</div>
+          <div className="esc-box"><b className="small">Demande transmise</b>{detail.escalations.slice(0, 2).map((e) => <div key={e.id} className="small esc-line"><span className={`chip ${e.statut === "RESOLVED" ? "chip-good" : "chip-warn"}`}>{e.statut === "RESOLVED" ? "Traité" : "En cours"}</span> Votre demande est suivie par Kenza.</div>)}</div>
         )}
       </aside>
     </div>

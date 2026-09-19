@@ -150,7 +150,7 @@ function ConversationDrawer({ id, onClose }: { id: string; onClose: () => void }
 
 // ----------------------------------------------------------------------- Catalogue
 interface Product { ref: string; modele: string; famille: string; couleur: string; taille: string; prix_mad: number; prix_promo_mad: number | null; promo_fin: string | null; stock: number; disponible: boolean; matiere: string }
-function Catalogue() {
+export function Catalogue() {
   const { data, error } = usePolling<Product[]>("/api/catalogue", 15000);
   const [q, setQ] = useState("");
   const rows = useMemo(() => (data ?? []).filter((p) => `${p.ref} ${p.modele} ${p.famille} ${p.couleur}`.toLowerCase().includes(q.toLowerCase())), [data, q]);
@@ -168,7 +168,7 @@ function Catalogue() {
 // ----------------------------------------------------------------------- Stock
 interface StockRow { ref: string; modele: string; famille: string; couleur: string; taille: string; stock: number; statut: "rupture" | "faible" | "en_stock" }
 interface Facets { familles: string[]; couleurs: string[]; tailles: string[] }
-function Stock() {
+export function Stock() {
   const [f, setF] = useState({ statut: "", famille: "", couleur: "", taille: "" });
   const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
   const { data, error } = usePolling<StockRow[]>(`/api/stock?${qs}`, 5000);

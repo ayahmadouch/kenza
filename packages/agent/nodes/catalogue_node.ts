@@ -2,8 +2,8 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { pool } from "../../db/pool";
 import { DISCOUNT_MAX_PCT, MAX_TOOL_ROUNDS, POLICY } from "../config";
 import { buildLlm, invokeLogged, llmConfigured } from "../llm";
-import { analyzeMessage } from "../rules";
-import { buildToolset, apply_discount, cartTotal, get_client_history, get_shipping_cost, loadCart, suggest_alternatives } from "../tools";
+import { buildToolset, apply_discount, cartTotal, get_client_history, get_shipping_cost, loadCart, search_catalog, suggest_alternatives } from "../tools";
+import { analyzeMessage, wantsCatalog, wantsProductLookup } from "../rules";
 import type { CartItem, Fact, KenzaState, TraceEvent } from "../types";
 import { ev, lastUserText, toChat } from "./util";
 
@@ -13,8 +13,12 @@ Règles :
 - Ne fournis JAMAIS un prix, un total ou des frais : les tools les calculent.
 - Une taille = une référence distincte. Client qui change de taille => update_cart(change_size), pas un nouvel ajout.
 - Produit demandé => search_catalog / check_stock ; ajout au panier => update_cart(add) ; prix => get_price.
+- Si le client dit qu'il veut acheter, prendre, commander ou réserver un produit, tu es Kenza : appelle immédiatement search_catalog puis check_stock et update_cart(add) dès que la référence et la taille sont suffisamment identifiées. Ne réponds jamais « l'équipe va traiter la demande » pour un achat courant.
 - Si un produit est en rupture, l'alternative est ajoutée automatiquement : n'invente rien.
 - Ville de livraison connue et le client confirme + a choisi un paiement => create_order. Sans confirmation explicite, N'APPELLE PAS create_order.
+- Kenza gère elle-même la vente courante : vérifie le stock, explique disponible/rupture,
+  demande le moyen de paiement préféré parmi les options vérifiées, récapitule et demande
+  la confirmation finale. Ne renvoie pas le client vers le commerçant pour ces étapes.
 - Information manquante (taille, ville, paiement) : n'appelle pas le tool, l'agent de conversation posera la question.
 - Situation que tu ne sais pas traiter : appelle escalate.
 Quand tu as assez de données, réponds sans tool call.`;
@@ -59,6 +63,21 @@ export async function catalogue_node(state: KenzaState): Promise<Partial<KenzaSt
   }
 
   const cartBefore = await loadCart(state.conversationId);
+  if (wantsCatalog(text)) {
+    const products = await step("search_catalog", { en_stock_seulement: false }, () => search_catalog({ en_stock_seulement: false }));
+    for (const product of products) {
+      facts.push({ type: "price", value: product, source: "db:products+promotions", ref: product.ref });
+      facts.push({ type: "stock", value: { ref: product.ref, stock: product.stock, disponible: product.disponible }, source: "db:products.stock", ref: product.ref });
+    }
+  }
+  const refs = [...text.matchAll(/\bREF[- ]?(\d{4})\b/gi)].map((m) => `REF-${m[1]}`);
+  for (const ref of [...new Set(refs)]) {
+    const stock = await step("check_stock", { ref }, () => tools.find((tool) => tool.name === "check_stock")!.invoke({ ref }));
+    const stockResult = j(JSON.parse(stock));
+    absorb("check_stock", { ref }, stockResult);
+    const price = await step("get_price", { ref }, () => tools.find((tool) => tool.name === "get_price")!.invoke({ ref }));
+    absorb("get_price", { ref }, j(JSON.parse(price)));
+  }
   if (ville && (rules.city?.kind === "grid" || cartBefore.length > 0)) {
     const s = await step("get_shipping_cost", { ville }, () => get_shipping_cost({ ville: ville! }));
     facts.push({ type: "shipping", value: s, source: "db:shipping_rates" });

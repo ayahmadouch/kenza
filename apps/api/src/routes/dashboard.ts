@@ -158,6 +158,17 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     return rows;
   });
 
+  app.get("/api/clients/:clientId/commandes", async (req) => {
+    const { clientId } = req.params as { clientId: string };
+    const { rows } = await pool.query(`
+      SELECT o.commande_id, o.date, o.statut, o.total_articles_mad, o.frais_livraison_mad, o.total_mad, o.ville_livraison, o.paiement, o.created_by,
+             COALESCE((SELECT json_agg(json_build_object('ref', oi.ref, 'modele', oi.modele, 'taille', oi.taille, 'quantite', oi.quantite, 'prix_unitaire_mad', oi.prix_unitaire_mad) ORDER BY oi.id) FROM order_items oi WHERE oi.commande_id = o.commande_id), '[]') AS items
+        FROM orders o
+        WHERE o.client_id = $1
+       ORDER BY o.date DESC, o.commande_id DESC LIMIT 50`, [clientId]);
+    return rows;
+  });
+
   // --------------------------------------------------------------- Relances
   app.get("/api/relances", async () => {
     const { rows } = await pool.query(`

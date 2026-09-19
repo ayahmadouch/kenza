@@ -34,10 +34,29 @@ h1, h2, h3 { font-family: var(--font-display); }
 .rail-icon { position: relative; display: grid; place-items: center; width: 44px; height: 34px; border-radius: 12px; transition: background .15s; }
 .rail-item:hover .rail-icon { background: rgba(255,255,255,.09); }
 .rail-item.active { color: #fff; font-weight: 600; } .rail-item.active .rail-icon { background: var(--safran); color: var(--nuit); }
+.rail-switch { margin-top: 8px; border-top: 1px solid rgba(255,255,255,.12); padding: 14px 4px 4px; color: var(--safran); font-size: 10.5px; text-align: center; text-decoration: none; }
+.rail-switch:hover { color: #fff; }
+.rail-logout { margin-top: 10px; border: 0; padding: 8px 2px; background: transparent; color: var(--corail); font-size: 10.5px; }
+.rail-logout:hover { color: #fff; }
 .rail-badge { position: absolute; top: -5px; right: -2px; min-width: 18px; padding: 1px 5px; border-radius: 999px; background: var(--corail); color: #fff; font: 700 10.5px var(--font-body); font-style: normal; text-align: center; }
 .rail-foot { margin-top: auto; padding-top: 12px; text-align: center; color: var(--safran); font-size: 20px; font-family: "IBM Plex Sans Arabic", sans-serif; font-weight: 600; }
 .content { min-width: 0; padding: 30px clamp(18px, 3vw, 44px) 60px; }
 .content-chat { padding: 16px 18px; }
+.client-shell { min-height: 100vh; }
+.customer-shell { min-height: 100vh; background: var(--chaux); }
+.customer-header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 24px; min-height: 72px; padding: 12px clamp(18px, 4vw, 56px); color: #fff; background: var(--nuit); box-shadow: 0 8px 24px rgba(12,16,64,.16); }
+.customer-brand { display: flex; align-items: center; gap: 9px; font: 700 22px var(--font-display); }
+.customer-brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--majorelle); }
+.customer-nav { display: flex; align-items: center; gap: 5px; flex: 1; }
+.customer-nav button { border: 0; border-radius: 10px; padding: 9px 12px; background: transparent; color: #b9c0f5; font-size: 13px; }
+.customer-nav button:hover, .customer-nav button.active { color: #fff; background: rgba(255,255,255,.12); }
+.customer-merchant-link { color: var(--safran); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.customer-content { max-width: 1440px; margin: 0 auto; padding: 30px clamp(18px, 4vw, 56px) 60px; }
+.customer-content-chat { width: 100%; max-width: none; padding: 16px 18px; }
+.customer-orders { display: grid; gap: 12px; max-width: 900px; }
+.customer-order { display: grid; gap: 14px; padding: 18px; }
+.customer-order-items { display: grid; gap: 6px; padding-block: 10px; border-block: 1px solid var(--trait); font-size: 13px; }
+.customer-view-hidden { display: none; }
 
 /* ---------- primitives */
 .muted { color: var(--muted); } .small { font-size: 12.5px; } .tiny { font-size: 11px; } .pad { padding: 10px; } .pad-lg { padding: 20px; }
@@ -69,7 +88,7 @@ h1, h2, h3 { font-family: var(--font-display); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- discuter */
-.chat-layout { display: grid; grid-template-columns: 290px minmax(0, 1fr) 370px; gap: 22px; height: calc(100vh - 32px); min-height: 640px; }
+.chat-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; height: calc(100vh - 32px); min-height: 640px; max-width: 1320px; margin: 0 auto; }
 .clients, .mind { min-height: 0; overflow-y: auto; padding: 8px 4px 8px 6px; }
 .new-client { display: grid; gap: 8px; margin: 0 0 12px; padding: 12px; border-radius: 16px; background: var(--ciel); }
 .client-list { display: grid; gap: 2px; margin-top: 12px; }
@@ -92,6 +111,8 @@ h1, h2, h3 { font-family: var(--font-display); }
 .hero-title { margin: 6px 0 0; font-size: clamp(28px, 3.2vw, 40px); line-height: 1.05; letter-spacing: -.035em; }
 .hero-langs { display: grid; gap: 8px; } .hero-langs span { display: inline-block; justify-self: center; padding: 8px 16px; border-radius: 18px; background: var(--papier); border: 1px solid var(--trait); font-size: 15px; } .hero-langs span:nth-child(2) { background: var(--majorelle); border-color: var(--majorelle); color: #fff; }
 .hero-copy { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.customer-form { display: grid; gap: 9px; width: min(100%, 370px); margin-top: 6px; padding: 18px; border: 1px solid var(--trait); border-radius: 22px; background: rgba(255,255,255,.88); box-shadow: 0 16px 35px -24px rgba(12,16,64,.45); text-align: left; }
+.customer-form-title { font: 700 17px var(--font-display); color: var(--encre); }
 
 .msg { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; } .msg.from-client { justify-content: flex-end; }
 .msg-avatar { display: grid; place-items: center; flex: none; width: 28px; height: 28px; margin-top: 2px; border-radius: 10px; background: var(--nuit); }
@@ -116,6 +137,7 @@ h1, h2, h3 { font-family: var(--font-display); }
 .pcard-stock { font-size: 11.5px; font-weight: 650; } .pcard-stock.ok { color: #0b7a58; } .pcard-stock.ko { color: var(--corail); } .pcard-ref { justify-self: start; margin-top: 2px; }
 
 .scenario-bar { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px 2px; background: var(--papier); border-top: 1px solid var(--trait); scrollbar-width: thin; }
+.scenario-label { align-self: center; flex: none; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .scenario { flex: none; border: 1px solid var(--trait); border-radius: 999px; padding: 6px 12px; background: var(--papier); color: var(--majorelle-2); font-size: 12px; font-weight: 600; } .scenario:hover:not(:disabled) { background: var(--ciel); }
 .composer { display: flex; align-items: center; gap: 8px; padding: 12px 16px 14px; background: var(--papier); }
 .compose-input { flex: 1; min-width: 0; border: 1.5px solid var(--trait); border-radius: 999px; padding: 12px 18px; background: var(--chaux); font-size: 14.5px; } .compose-input:focus { outline: none; border-color: var(--majorelle); background: var(--papier); box-shadow: 0 0 0 4px var(--ciel); }

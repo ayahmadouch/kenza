@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { z } from "zod";
 import type { Intention, KenzaState, Langue } from "../types";
 import { buildLlm, contentToText, invokeLogged, llmConfigured } from "../llm";
-import { analyzeMessage, heuristicLangDetect } from "../rules";
+import { analyzeMessage, heuristicLangDetect, wantsCatalog, wantsProductLookup, wantsToBuy } from "../rules";
 import { normalizeArabizi } from "../text";
 import { ensureRedis } from "../memory";
 import { ev, lastUserText } from "./util";
@@ -67,6 +67,18 @@ export async function intent_node(state: KenzaState): Promise<Partial<KenzaState
     out = fallback(text, heuristicLangDetect(text));
   }
   let intention: Intention = out.confiance < 0.5 ? "inconnu" : out.intention;
+  if (intention === "inconnu" && wantsToBuy(text)) {
+    intention = "prix_et_disponibilite";
+    out.confiance = Math.max(out.confiance, 0.8);
+  }
+  if (wantsCatalog(text)) {
+    intention = "prix_et_disponibilite";
+    out.confiance = Math.max(out.confiance, 0.8);
+  }
+  if (intention === "inconnu" && wantsProductLookup(text)) {
+    intention = "prix_et_disponibilite";
+    out.confiance = Math.max(out.confiance, 0.8);
+  }
   if (state.media?.kind === "image") { intention = "photo_produit"; out.confiance = Math.max(out.confiance, 0.9); }
   else if (state.media?.kind === "audio" && intention === "inconnu") intention = "note_vocale";
 

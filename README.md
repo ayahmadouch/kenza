@@ -80,7 +80,7 @@ Bleu de jardin, safran et plâtre à la chaux ; un seul motif, l'**étoile à 8 
 cp .env.example .env          # renseigner LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 docker compose up --build
 ```
-Web : http://localhost:5173 · API : http://localhost:4000/health. Le schéma et le seeder s'exécutent automatiquement au démarrage de l'API (idempotent ; **FAIL FAST** si les volumes ≠ 80/120/320/449/12/12). Les fichiers de `data/` ne sont jamais modifiés (montés en lecture seule).
+Web client : http://localhost:5173 · Dashboard commerçant : http://localhost:5173/?mode=merchant · API : http://localhost:4000/health. Le client dispose du chat, du catalogue, du stock et de son historique de commandes ; le dashboard commerçant expose les conversations, commandes, relances, escalades et traces agent. Le schéma et le seeder s'exécutent automatiquement au démarrage de l'API (idempotent ; **FAIL FAST** si les volumes ≠ 80/120/320/449/12/12). Les fichiers de `data/` ne sont jamais modifiés (montés en lecture seule).
 
 Variables : voir `.env.example`. **Ne commitez jamais `.env`.**
 Démo de nuit : `DEMO_IGNORE_SHOP_HOURS=1` désactive uniquement le report aux horaires d'ouverture.

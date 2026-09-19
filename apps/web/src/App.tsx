@@ -1,13 +1,12 @@
 import { useState } from "react";
-import ChatSimulator from "./ChatSimulator";
 import Dashboard, { type Page } from "./Dashboard";
 import type { Kpis } from "./api";
 import { usePolling } from "./usePolling";
 import { Icon, Khatam } from "./ui";
+import CustomerPortal from "./CustomerPortal";
 
-type View = "chat" | Page;
+type View = Page;
 const NAV: { id: View; label: string; icon: string }[] = [
-  { id: "chat", label: "Discuter", icon: "chat" },
   { id: "overview", label: "Aujourd'hui", icon: "chart" },
   { id: "conversations", label: "Échanges", icon: "people" },
   { id: "orders", label: "Commandes", icon: "receipt" },
@@ -19,8 +18,14 @@ const NAV: { id: View; label: string; icon: string }[] = [
 ];
 
 export default function App() {
-  const [view, setView] = useState<View>("chat");
+  const merchantMode = new URLSearchParams(window.location.search).get("mode") === "merchant";
+  const [view, setView] = useState<View>("overview");
   const { data: k } = usePolling<Kpis>("/api/kpis", 5000);
+
+  if (!merchantMode) {
+    return <CustomerPortal />;
+  }
+
   return (
     <div className="shell">
       <nav className="rail" aria-label="Navigation principale">
@@ -31,9 +36,10 @@ export default function App() {
             <span className="rail-label">{n.label}</span>
           </button>
         ))}
+        <a className="rail-switch" href="/">Espace client</a>
         <div className="rail-foot" lang="ar">كنزة</div>
       </nav>
-      <main className={`content ${view === "chat" ? "content-chat" : ""}`}>{view === "chat" ? <ChatSimulator /> : <Dashboard page={view} />}</main>
+      <main className="content"><Dashboard page={view} /></main>
     </div>
   );
 }

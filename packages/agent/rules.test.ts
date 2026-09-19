@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { analyzeMessage, detectEscalationTrigger, extractDiscountPct, heuristicLangDetect, looksLikeConfirmation } from "./rules";
+import { analyzeMessage, detectEscalationTrigger, extractDiscountPct, heuristicLangDetect, looksLikeConfirmation, wantsCatalog, wantsProductLookup, wantsToBuy } from "./rules";
 import { detectCity, resolveGridCity } from "./cities";
 import { normalizeArabizi } from "./text";
 
@@ -63,6 +63,17 @@ t("نعم", () => assert.equal(looksLikeConfirmation("نعم"), true));
 t("« oui mais en L » n'est pas une confirmation", () => assert.equal(looksLikeConfirmation("oui mais en L"), false));
 t("« finalement L » n'est pas une confirmation", () => assert.equal(looksLikeConfirmation("Finalement L"), false));
 t("question ≠ confirmation", () => assert.equal(looksLikeConfirmation("Quel est le prix ?"), false));
+
+console.log("Achat → parcours catalogue");
+t("acheter en français", () => assert.equal(wantsToBuy("Je veux acheter cette robe"), true));
+t("commander en darija", () => assert.equal(wantsToBuy("bghit nchri had sac"), true));
+t("acheter en arabe", () => assert.equal(wantsToBuy("أريد شراء هذا الفستان"), true));
+t("question de prix ≠ achat", () => assert.equal(wantsToBuy("chhal taman had robe ?"), false));
+t("afficher le catalogue", () => assert.equal(wantsCatalog("Affiche-moi le catalogue"), true));
+t("catalogue en darija", () => assert.equal(wantsCatalog("wrini les produits disponibles"), true));
+t("catalogue darija avec faute", () => assert.equal(wantsCatalog("brit nchof lctalogue dyalkoum"), true));
+t("catalogue en arabe", () => assert.equal(wantsCatalog("أرني المنتجات"), true));
+t("référence et disponibilité", () => assert.equal(wantsProductLookup("REF-0049 est-il disponible ?"), true));
 
 console.log("Langue / arabizi");
 t("fr", () => assert.equal(heuristicLangDetect("Bonjour, la robe est disponible en L ?"), "fr"));
