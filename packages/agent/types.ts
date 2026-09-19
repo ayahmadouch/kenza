@@ -23,7 +23,21 @@ export type Intention =
   | "inconnu";
 
 export interface Fact {
-  type: "price" | "stock" | "shipping" | "promotion" | "discount" | "order_total" | "availability" | "payment_method";
+  type:
+    | "price"
+    | "stock"
+    | "shipping"
+    | "promotion"
+    | "discount"
+    | "order_total"
+    | "availability"
+    | "payment_method"
+    | "totals"
+    | "alternative"
+    | "policy"
+    | "history"
+    | "cart"
+    | "vision";
   value: unknown;
   source: string; // ex: "db:products.prix_mad"
   ref?: string;
@@ -48,6 +62,8 @@ export interface KenzaState {
 
   intention?: Intention;
   intentConfidence?: number;
+  /** Code d'escalade déterministe (rules.ts), prioritaire sur le LLM. */
+  escalationCode?: string;
 
   facts: Fact[];
 
@@ -56,6 +72,7 @@ export interface KenzaState {
   ville?: string;
 
   shipping?: {
+    ville: string;
     frais: number;
     delai_h: number;
     cod: boolean;
@@ -83,6 +100,13 @@ export interface KenzaState {
   orderId?: string;
 
   needsHuman: boolean;
+
+  /** Pièce jointe brute (audio/image) à convertir en texte par multimodal_node. */
+  media?: { kind: "audio" | "image"; base64: string; mime?: string };
+  /** Texte issu de la transcription / description d'image. */
+  transcript?: string;
+  /** Le client vient de confirmer explicitement sa commande (règles + LLM). */
+  confirmation?: boolean;
 
   trace: TraceEvent[];
 }

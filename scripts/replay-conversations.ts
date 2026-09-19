@@ -68,10 +68,30 @@ function collectFactNumbers(facts: any[], cart: any[], shipping: any): Set<numbe
   return set;
 }
 
+async function createReplayConversations(conversations: ConvRecord[], runId: string) {
+  for (const conv of conversations) {
+    const conversationId = `REPLAY-${conv.id}-${runId}`;
+    await pool.query(
+      `INSERT INTO conversations (id, client_id, telephone, canal, langue, ville, cart)
+       VALUES ($1,$2,$3,$4,$5,$6,'[]'::jsonb)`,
+      [conversationId, conv.client_id ?? null, conv.telephone ?? null, conv.canal ?? "replay", conv.langue ?? "fr", conv.ville ?? null]
+    );
+  }
+}
+
+async function cleanupReplayConversations(runId: string) {
+  const pattern = `REPLAY-%-${runId}`;
+  await pool.query(`DELETE FROM escalations WHERE conversation_id LIKE $1`, [pattern]);
+  await pool.query(`DELETE FROM messages WHERE conversation_id LIKE $1`, [pattern]);
+  await pool.query(`DELETE FROM conversations WHERE id LIKE $1`, [pattern]);
+}
+
 async function main() {
   const conversations = loadConversations();
+  const runId = Date.now().toString();
   const checkpointer = new PostgresSaver(pool);
   await checkpointer.setup();
+  await createReplayConversations(conversations, runId);
   const graph = buildKenzaGraph(checkpointer);
 
   const results: CaseResult[] = [];
@@ -80,7 +100,7 @@ async function main() {
 
   for (const conv of conversations) {
     const checks: CaseResult["checks"] = [];
-    const threadId = `REPLAY-${conv.id}`;
+    const threadId = `REPLAY-${conv.id}-${runId}`;
     let lastState: any = null;
 
     for (const tour of conv.tours) {
@@ -166,6 +186,7 @@ async function main() {
   console.log(`\n${nbPass}/${results.length} conversations conformes aux assertions.`);
   console.log(`Précision intention: ${(intentRate * 100).toFixed(1)}% (seuil requis: >=85%)`);
 
+  await cleanupReplayConversations(runId);
   await pool.end();
   const globalOk = nbPass === results.length && intentRate >= 0.85;
   process.exit(globalOk ? 0 : 1);

@@ -1,4 +1,4 @@
-import { createClient } from "redis";
+import IORedis from "ioredis";
 
 /**
  * Mémoire courte (Redis) : état volatile de la conversation en cours
@@ -7,15 +7,14 @@ import { createClient } from "redis";
  * checkpointer PostgreSQL de LangGraph (packages/agent/graph.ts), qui
  * survit à un `docker compose restart`.
  */
-export const redis = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
-redis.on("error", (err) => console.error("[redis] erreur:", err));
+export const redis = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
+  maxRetriesPerRequest: null,
+  lazyConnect: true,
+});
+redis.on("error", (err) => console.error("[redis] erreur:", err.message));
 
-let connected = false;
 export async function ensureRedis() {
-  if (!connected) {
-    await redis.connect();
-    connected = true;
-  }
+  if (redis.status === "wait") await redis.connect();
   return redis;
 }
 
@@ -29,5 +28,5 @@ export async function getShortState(conversationId: string) {
 
 export async function setShortState(conversationId: string, value: unknown) {
   await ensureRedis();
-  await redis.set(`conv:${conversationId}:short`, JSON.stringify(value), { EX: TTL_SECONDS });
+  await redis.set(`conv:${conversationId}:short`, JSON.stringify(value), "EX", TTL_SECONDS);
 }

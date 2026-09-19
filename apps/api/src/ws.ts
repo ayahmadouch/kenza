@@ -60,12 +60,22 @@ async function ensureConversation(msg: IncomingMessage) {
 }
 
 export function registerChatWs(app: FastifyInstance) {
-  app.get("/ws/chat", { websocket: true }, (connection) => {
-    connection.socket.on("message", async (raw: Buffer) => {
+  app.get("/ws/chat", { websocket: true }, (socket) => {
+    socket.on("message", async (raw: Buffer) => {
       const started = Date.now();
       try {
         const msg = JSON.parse(raw.toString()) as IncomingMessage;
         const conv = await ensureConversation(msg);
+
+        if (conv.human_active || conv.needs_human) {
+          const handoff = "Cette conversation est actuellement prise en charge par notre équipe. Merci de patienter, nous revenons vers vous rapidement.";
+          await pool.query(
+            `INSERT INTO messages (conversation_id, role, texte, langue) VALUES ($1,'system',$2,$3)`,
+            [conv.id, handoff, conv.langue]
+          );
+          socket.send(JSON.stringify({ type: "agent_message", conversationId: conv.id, draft: handoff, langue: conv.langue, needsHuman: true, trace: [] }));
+          return;
+        }
 
         let userText = msg.text ?? "";
         let preEscalation: Partial<KenzaState> = {};
@@ -120,10 +130,10 @@ export function registerChatWs(app: FastifyInstance) {
 
         await pool.query(`UPDATE conversations SET last_message_at = now(), langue = $2 WHERE id = $1`, [conv.id, result.langue]);
         if (result.needsHuman) {
-          await pool.query(`UPDATE conversations SET needs_human = true, statut = 'needs_human' WHERE id = $1`, [conv.id]);
+          await pool.query(`UPDATE conversations SET needs_human = true, human_active = true, statut = 'needs_human' WHERE id = $1`, [conv.id]);
         }
 
-        connection.socket.send(JSON.stringify({
+        socket.send(JSON.stringify({
           type: "agent_message",
           conversationId: conv.id,
           draft: result.draft,
@@ -139,7 +149,7 @@ export function registerChatWs(app: FastifyInstance) {
         }));
       } catch (err) {
         app.log.error(err);
-        connection.socket.send(JSON.stringify({ type: "error", message: String(err) }));
+        socket.send(JSON.stringify({ type: "error", message: String(err) }));
       }
     });
   });

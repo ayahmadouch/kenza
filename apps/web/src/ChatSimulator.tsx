@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { WS_URL, apiGet } from "./api";
+import { WS_URL, apiGet, apiPost } from "./api";
 
 interface ChatMsg {
   role: "client" | "agent" | "system";
@@ -25,6 +25,8 @@ export default function ChatSimulator() {
   const [conversationId, setConversationId] = useState<string>(() => `WEB-${Date.now()}`);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
+  const [showNewClient, setShowNewClient] = useState(false);
+  const [newClient, setNewClient] = useState({ nom: "", telephone: "", ville: "Casablanca", langue_preferee: "fr" });
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -74,6 +76,15 @@ export default function ChatSimulator() {
     setMessages([]);
   }
 
+  async function createClient() {
+    const created = await apiPost<ClientRow>("/api/clients", newClient);
+    setSelectedClient(created);
+    setClients((current) => [created, ...current]);
+    setShowNewClient(false);
+    setNewClient({ nom: "", telephone: "", ville: "Casablanca", langue_preferee: "fr" });
+    newConversation();
+  }
+
   function onFile(kind: "image" | "audio", e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -86,48 +97,65 @@ export default function ChatSimulator() {
   }
 
   return (
-    <div className="grid grid-cols-3 gap-4 h-[75vh]">
-      <div className="col-span-1 bg-white rounded-lg shadow p-4 overflow-y-auto">
-        <h3 className="font-semibold mb-2">Client</h3>
+    <div>
+      <div className="eyebrow">Espace conversation</div>
+      <h1 className="page-title">Parlez à vos clients.</h1>
+      <p className="page-copy" style={{ marginBottom: 24 }}>Choisissez un client, puis laissez Kenza qualifier le besoin et conclure la vente.</p>
+    <div className="chat-layout">
+      <div className="surface client-panel">
+        <h3 className="panel-title">Carnet clients</h3>
+        <label className="panel-label" htmlFor="client-search">Rechercher</label>
         <input
-          className="w-full border rounded px-2 py-1 mb-2 text-sm"
+          id="client-search" className="search-input"
           placeholder="Rechercher nom / téléphone"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <button className="w-full mb-2 bg-slate-800 text-white rounded px-2 py-1 text-sm" onClick={newConversation}>
-          + Nouvelle conversation
+        <button className="primary-button" style={{ marginTop: 10 }} onClick={() => setShowNewClient((value) => !value)}>
+          {showNewClient ? "Fermer" : "+ Nouveau client"}
         </button>
-        <div className="space-y-1">
+        {showNewClient && (
+          <div className="new-client-form">
+            <input className="search-input" placeholder="Nom complet" value={newClient.nom} onChange={(e) => setNewClient({ ...newClient, nom: e.target.value })} />
+            <input className="search-input" placeholder="Téléphone" value={newClient.telephone} onChange={(e) => setNewClient({ ...newClient, telephone: e.target.value })} />
+            <input className="search-input" placeholder="Ville" value={newClient.ville} onChange={(e) => setNewClient({ ...newClient, ville: e.target.value })} />
+            <select className="search-input" value={newClient.langue_preferee} onChange={(e) => setNewClient({ ...newClient, langue_preferee: e.target.value })}>
+              <option value="fr">Français</option><option value="darija">Darija</option><option value="ar">Arabe</option>
+            </select>
+            <button className="send-button" onClick={() => void createClient()}>Créer le client</button>
+          </div>
+        )}
+        <label className="panel-label">Clients récents</label>
+        <div className="client-list">
           {clients.map((c) => (
             <button
               key={c.client_id}
               onClick={() => setSelectedClient(c)}
-              className={`w-full text-left text-sm px-2 py-1 rounded ${selectedClient?.client_id === c.client_id ? "bg-blue-100" : "hover:bg-slate-50"}`}
+              className={`client-row ${selectedClient?.client_id === c.client_id ? "selected" : ""}`}
             >
-              <div className="font-medium">{c.nom}</div>
-              <div className="text-xs text-slate-500">{c.telephone} · {c.ville} · {c.langue_preferee}</div>
+              <div className="client-name">{c.nom}</div>
+              <div className="client-meta">{c.telephone} · {c.ville} · {c.langue_preferee}</div>
             </button>
           ))}
         </div>
         {selectedClient && (
-          <div className="mt-3 text-xs text-slate-500">
-            Client sélectionné: <b>{selectedClient.nom}</b>
+          <div className="selected-client">
+            Client sélectionné : <b>{selectedClient.nom}</b>
           </div>
         )}
       </div>
 
-      <div className="col-span-2 bg-white rounded-lg shadow flex flex-col">
-        <div className="border-b px-4 py-2 text-sm text-slate-500 flex justify-between">
-          <span>Conversation {conversationId}</span>
-          <span className={connected ? "text-green-600" : "text-red-500"}>{connected ? "● connecté" : "○ déconnecté"}</span>
+      <div className="surface chat-panel">
+        <div className="chat-header">
+          <div><div className="eyebrow">Fil en direct</div><h2 className="chat-title">{selectedClient?.nom ?? "Nouveau client"}</h2></div>
+          <span className={`connection ${connected ? "online" : ""}`}>{connected ? "● En ligne" : "○ Hors ligne"}</span>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="messages">
+          {messages.length === 0 && <div className="empty-state">Le fil est prêt. Envoyez un premier message.</div>}
           {messages.map((m, i) => (
-            <div key={i} className={m.role === "client" ? "text-right" : "text-left"}>
-              <div className={`inline-block px-3 py-2 rounded-lg max-w-[80%] text-sm ${
-                m.role === "client" ? "bg-blue-600 text-white" : m.role === "system" ? "bg-red-100 text-red-700" : "bg-slate-100"
-              }`}>
+            <div key={i} className={`message-line ${m.role}`}>
+              <div>
+              <div className={`bubble ${m.role === "system" ? "system" : ""}`}>
                 {m.texte}
               </div>
               {m.role === "agent" && (
@@ -137,18 +165,19 @@ export default function ChatSimulator() {
                   {m.escalation && <span className="text-orange-600">escaladé: {m.escalation.motif}</span>}
                   {m.trace && (
                     <details className="inline">
-                      <summary className="cursor-pointer">trace ({m.trace.length})</summary>
-                      <pre className="text-left bg-slate-50 p-2 rounded mt-1 overflow-x-auto">{JSON.stringify(m.trace, null, 2)}</pre>
+                      <summary style={{ cursor: "pointer" }}>trace ({m.trace.length})</summary>
+                      <pre className="surface" style={{ textAlign: "left", padding: 10, marginTop: 5, overflowX: "auto" }}>{JSON.stringify(m.trace, null, 2)}</pre>
                     </details>
                   )}
                 </div>
               )}
+              </div>
             </div>
           ))}
         </div>
-        <div className="border-t p-3 flex gap-2 items-center">
+        <div className="composer">
           <input
-            className="flex-1 border rounded px-3 py-2 text-sm"
+            className="message-input"
             placeholder="Écrire un message (fr / ar / darija)..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -159,18 +188,19 @@ export default function ChatSimulator() {
               }
             }}
           />
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" id="img-input" onChange={(e) => onFile("image", e)} />
-          <label htmlFor="img-input" className="cursor-pointer text-sm bg-slate-100 px-2 py-2 rounded" title="Envoyer une photo">📷</label>
-          <input type="file" accept="audio/*" className="hidden" id="audio-input" onChange={(e) => onFile("audio", e)} />
-          <label htmlFor="audio-input" className="cursor-pointer text-sm bg-slate-100 px-2 py-2 rounded" title="Envoyer une note vocale">🎤</label>
+          <input ref={fileInputRef} type="file" accept="image/*" className="file-input" id="img-input" onChange={(e) => onFile("image", e)} />
+          <label htmlFor="img-input" className="media-button" title="Envoyer une photo"><span aria-hidden="true">◫</span><span>Photo</span></label>
+          <input type="file" accept="audio/*" className="file-input" id="audio-input" onChange={(e) => onFile("audio", e)} />
+          <label htmlFor="audio-input" className="media-button" title="Envoyer une note vocale"><span aria-hidden="true">◉</span><span>Audio</span></label>
           <button
-            className="bg-blue-600 text-white rounded px-4 py-2 text-sm"
+            className="send-button"
             onClick={() => { if (input.trim()) { send("text", { text: input }); setInput(""); } }}
           >
             Envoyer
           </button>
         </div>
       </div>
+    </div>
     </div>
   );
 }

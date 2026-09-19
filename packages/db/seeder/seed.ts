@@ -80,6 +80,8 @@ async function seedOrders() {
 
 async function seedOrderItems() {
   const rows = parseCsv(path.join(DATA_DIR, "commandes-lignes.csv"));
+  // Rechargement atomique des lignes HISTORIQUES uniquement (jamais celles créées par l'agent).
+  await pool.query(`DELETE FROM order_items WHERE commande_id IN (SELECT commande_id FROM orders WHERE created_by = 'humain')`);
   for (const r of rows) {
     await pool.query(
       `INSERT INTO order_items (commande_id, ref, modele, taille, quantite, prix_unitaire_mad)
@@ -105,6 +107,7 @@ async function seedShipping() {
 
 async function seedPromotions() {
   const rows = parseCsv(path.join(DATA_DIR, "promotions.csv"));
+  await pool.query(`DELETE FROM promotions`);
   for (const r of rows) {
     await pool.query(
       `INSERT INTO promotions (ref, prix_normal_mad, prix_promo_mad, debut, fin, condition)
@@ -115,8 +118,17 @@ async function seedPromotions() {
   return rows.length;
 }
 
+/** Compte uniquement les données SEEDÉES : les clients/commandes créés ensuite par l'agent ne font pas échouer le démarrage. */
+const COUNT_SQL: Record<string, string> = {
+  products: `SELECT COUNT(*)::int AS n FROM products`,
+  clients: `SELECT COUNT(*)::int AS n FROM clients WHERE client_id ~ '^CLI-[0-9]{4}$'`,
+  orders: `SELECT COUNT(*)::int AS n FROM orders WHERE created_by = 'humain'`,
+  order_items: `SELECT COUNT(*)::int AS n FROM order_items WHERE commande_id IN (SELECT commande_id FROM orders WHERE created_by = 'humain')`,
+  shipping_rates: `SELECT COUNT(*)::int AS n FROM shipping_rates`,
+  promotions: `SELECT COUNT(*)::int AS n FROM promotions`,
+};
 async function countRows(table: string): Promise<number> {
-  const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM ${table}`);
+  const { rows } = await pool.query(COUNT_SQL[table]);
   return rows[0].n;
 }
 
@@ -128,8 +140,8 @@ async function countRows(table: string): Promise<number> {
  */
 async function seedOnceIfEmpty(table: string, fn: () => Promise<number>) {
   const existing = await countRows(table);
-  if (existing > 0) {
-    console.log(`[seed] ${table}: déjà peuplé (${existing} lignes), on ne recharge pas.`);
+  if (existing === EXPECTED[table as keyof typeof EXPECTED]) {
+    console.log(`[seed] ${table}: déjà complet (${existing}), rien à faire.`);
     return;
   }
   const n = await fn();

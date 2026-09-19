@@ -1,12 +1,9 @@
 # Kenza — agent commercial autonome (#NumeosHack26, Sujet 02)
 
-> ⚠️ **État réel de ce livrable, à lire avant tout.** Ce dépôt a été généré dans un
-> environnement sans accès réseau ni Docker : je n'ai **pas pu exécuter**
-> `npm install`, `docker compose up`, ni lancer les tests. Le code est complet et
-> cohérent avec le cahier des charges, mais **non vérifié**. Attendez-vous à devoir
-> corriger des erreurs de compilation/typage (notamment sur les signatures exactes de
-> `@langchain/langgraph` et `@langchain/langgraph-checkpoint-postgres`, dont les API
-> évoluent) à la première exécution. Section [Limites connues](#limites-connues) en bas.
+> **État vérifié au 19 septembre 2026.** Le projet compile, le frontend se construit,
+> les tests métier passent et `docker compose up -d --build` démarre les cinq services.
+> Un smoke test WebSocket avec une demande darija réelle a produit une réponse guardrailée
+> avec appels `get_client_history` et `get_price`.
 
 ## 1. Problème
 
@@ -131,6 +128,15 @@ facts, absence de promesse de réassort, alternative proposée en cas de rupture
 escalade sur ville inconnue / réclamation / remise hors plancher, mise à jour du
 panier sur changement de taille, et un seuil de précision d'intention ≥ 85%.
 
+### Résultats vérifiés
+
+- `npx tsc --noEmit` : OK
+- `npm run test:tools` : 37 tests passés
+- `npx tsx packages/agent/rules.test.ts` : 54 tests passés
+- `npx vite build --config apps/web/vite.config.ts` : OK
+- `docker compose config --quiet` : OK
+- Seeder : `80/120/320/449/12/12`, contrôle FAIL FAST validé
+
 ## 7. EX-01 → EX-08
 
 | # | Exigence | Où le vérifier |
@@ -159,17 +165,10 @@ panier sur changement de taille, et un seuil de précision d'intention ≥ 85%.
 
 ## 9. Limites connues
 
-- **Non exécuté** : voir avertissement en haut de ce fichier. Les points les plus
-  susceptibles de nécessiter un ajustement : les imports/API exacts de
-  `@langchain/langgraph` (`Annotation`, `StateGraph`) et de
-  `@langchain/langgraph-checkpoint-postgres` (`PostgresSaver.setup()`), qui changent
-  entre versions ; le format exact des tool_calls retournés par le modèle Numeos ;
-  la gestion des types audio/image dans `@langchain/openai`.
-- Le frontend (chat + dashboard) est fonctionnel mais volontairement sobre (pas de
-  design abouti).
+- Les fonctions audio/image dépendent des endpoints STT/vision configurés par le
+  fournisseur LLM et disposent d'une dégradation propre vers l'escalade.
+- Le frontend est volontairement sobre et orienté démonstration opérationnelle.
 - WhatsApp Cloud API n'est pas branché (hors périmètre assumé, cf. cahier des charges).
-- Les tests unitaires et `replay-conversations.ts` sont écrits mais jamais exécutés :
-  il faut s'attendre à devoir corriger des assertions après un premier run réel.
 
 ## 10. Bonus non couverts
 

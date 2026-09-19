@@ -1,105 +1,84 @@
+import { DISCOUNT_MAX_PCT } from "../config";
+import { toLatinDigits, foldText } from "../text";
 import type { Fact, KenzaState } from "../types";
+import { lastUserText } from "../nodes/util";
 
-const REASSORT_KEYWORDS = [
-  "réassort", "reassort", "de retour en stock", "revient le", "sera de nouveau disponible",
-  "disponible dans", "dans quelques jours", "la semaine prochaine", "prochainement en stock",
+const REASSORT = [
+  "reassort", "réassort", "reapprovision", "réapprovision", "de retour en stock", "revient le", "reviendra", "sera de nouveau disponible",
+  "sera disponible", "redeviendra", "prochainement en stock", "restock", "back in stock", "nouvel arrivage",
+  "ghadi yrj3", "ghadi ykon", "ghadi yji", "ghadi yweslo", "ghadi yrja3", "ghadi ywsl", "bnti", "غادي يرجع", "غادي يتوفر", "سيتوفر", "سيعود", "سيرجع", "سيتم توفير", "قريبا", "الاسبوع القادم", "الأسبوع القادم",
 ];
+const CASH_REFUND = ["remboursement en espèces", "remboursé en cash", "rembourse en espèces", "remboursée en espèces", "نرجع لك الفلوس", "استرجاع المبلغ نقدا"];
 
-const CASH_REFUND_KEYWORDS = ["remboursement en espèces", "remboursé en cash", "rembourse en espèces"];
-
-/**
- * Le guardrail est la dernière ligne de défense avant l'envoi d'une
- * réponse au client : il ne relit jamais le raisonnement du LLM, seulement
- * le texte final (draft) et les facts produits par les tools. Toute
- * violation bloque la réponse.
- */
+/** Le guardrail relit le texte final et les facts, jamais le raisonnement du LLM. */
 export function runGuardrail(state: KenzaState): { ok: boolean; violations: string[] } {
   const violations: string[] = [];
   const draft = state.draft ?? "";
-
-  // 1) Tout nombre MAD présent dans le texte doit être justifiable par un fact.
-  const numbersInDraft = extractNumbers(draft);
-  const justifiedNumbers = collectJustifiedNumbers(state.facts, state);
-  for (const n of numbersInDraft) {
-    if (!justifiedNumbers.has(n)) {
-      violations.push(`Nombre non justifié par un fact: ${n}`);
-    }
-  }
-
-  // 2) Jamais de promesse de date de réassort.
   const lower = draft.toLowerCase();
-  if (REASSORT_KEYWORDS.some((k) => lower.includes(k))) {
-    violations.push("Promesse de réassort détectée dans la réponse (interdit).");
-  }
+  const client = lastUserText(state.messages);
 
-  // 3) Jamais de remboursement en espèces promis par l'agent.
-  if (CASH_REFUND_KEYWORDS.some((k) => lower.includes(k))) {
-    violations.push("Promesse de remboursement en espèces détectée (doit escalader).");
-  }
-
-  // 4) La remise annoncée ne doit jamais dépasser le plancher autorisé.
-  if (state.remise && state.remise.accordee_pct > 10) {
-    violations.push(`Remise accordée (${state.remise.accordee_pct}%) dépasse le plancher de 10%.`);
-  }
-
-  // 5) COD proposé seulement si un fact shipping l'autorise explicitement.
-  if (/paiement (?:à|a) la livraison/i.test(draft) || /\bcod\b/i.test(draft)) {
-    const shippingFact = state.facts.find((f) => f.type === "shipping");
-    const codOk = shippingFact && (shippingFact.value as { cod?: boolean })?.cod === true;
-    if (!codOk) {
-      violations.push("Paiement à la livraison mentionné sans fact shipping confirmant cod=true.");
+  const justified = collectJustifiedNumbers(state);
+  for (const n of extractNumbers(draft)) {
+    const echoOfClient = n.pct && numbersIn(client).has(n.value);
+    if (!justified.has(n.value) && !echoOfClient && !(numbersIn(client).has(n.value) && !n.money)) {
+      violations.push(`Nombre non justifié par un fact: ${n.value}`);
     }
   }
 
+  // Références inventées
+  const knownRefs = new Set((JSON.stringify(state.facts) + JSON.stringify(state.cart)).match(/REF-\d{4}/g) ?? []);
+  for (const ref of draft.match(/REF-\d{4}/g) ?? []) if (!knownRefs.has(ref)) violations.push(`Référence non issue d'un tool: ${ref}`);
+
+  if (REASSORT.some((k) => lower.includes(k.toLowerCase()))) violations.push("Promesse de réassort détectée (interdit).");
+  if (CASH_REFUND.some((k) => lower.includes(k))) violations.push("Promesse de remboursement en espèces (doit escalader).");
+  if (state.remise && state.remise.accordee_pct > DISCOUNT_MAX_PCT) violations.push(`Remise accordée > plafond ${DISCOUNT_MAX_PCT}%.`);
+
+  if (/paiement (?:à|a) la livraison|\bcod\b|عند الاستلام|الدفع عند|khlas 3nd|paiement cash/i.test(draft)) {
+    const ship = state.facts.find((f) => f.type === "shipping" && (f.value as { trouve?: boolean })?.trouve);
+    if (!ship || (ship.value as { cod?: boolean }).cod !== true) violations.push("Paiement à la livraison mentionné sans grille confirmant cod=true.");
+  }
   return { ok: violations.length === 0, violations };
 }
 
-function extractNumbers(text: string): number[] {
-  // Nombres à 2 chiffres ou plus (évite de flaguer "1ère", "2 articles" trivialement,
-  // mais reste volontairement strict : toute quantité/montant doit être justifiée).
-  const matches = text.match(/\d[\d\s]{1,}(?=\s?(MAD|mad|%|h\b))|\b\d{2,}\b/g) ?? [];
-  return matches
-    .map((m) => Number(m.replace(/\s/g, "")))
-    .filter((n) => Number.isFinite(n));
+interface Num { value: number; pct: boolean; money: boolean }
+
+function cleaned(text: string): string {
+  return toLatinDigits(text)
+    .replace(/\b(?:REF|CMD)-[A-Z]?\d+\b/gi, " ")
+    .replace(/\+?\d{2,3}[\s.]?\d{8,10}\b/g, " ") // téléphones
+    .replace(/\d{4}-\d{2}-\d{2}/g, " ")
+    .replace(/(\d)[\s\u00a0\u202f](?=\d{3}\b)/g, "$1");
 }
 
-function collectJustifiedNumbers(facts: Fact[], state: KenzaState): Set<number> {
+function numbersIn(text: string): Set<number> {
+  return new Set([...cleaned(text).matchAll(/\d+(?:[.,]\d+)?/g)].map((m) => Number(m[0].replace(",", "."))));
+}
+
+export function extractNumbers(text: string): Num[] {
+  const t = cleaned(text);
+  const out: Num[] = [];
+  for (const m of t.matchAll(/(\d+(?:[.,]\d+)?)\s*(MAD|DH|dhs?|dirhams?|%|h\b|heures?|jours?|j\b)?/gi)) {
+    const value = Number(m[1].replace(",", "."));
+    const unit = (m[2] ?? "").toLowerCase();
+    // Les entiers isolés d'un chiffre (« 1 article », « M ») ne sont pas des données métier ; toute unité l'est.
+    if (!unit && value < 10 && Number.isInteger(value)) continue;
+    out.push({ value, pct: unit === "%", money: /mad|dh|dirham/.test(unit) });
+  }
+  return out;
+}
+
+function collectJustifiedNumbers(state: KenzaState): Set<number> {
   const set = new Set<number>();
-  for (const f of facts) {
-    addNumbersFromValue(f.value, set);
-  }
-  // Le panier, la livraison et la remise courants sont aussi des sources valides
-  // (ils dérivent eux-mêmes de facts produits par les tools en amont).
-  for (const item of state.cart) {
-    set.add(item.qte);
-    set.add(item.prix_unitaire);
-    set.add(item.qte * item.prix_unitaire);
-  }
-  if (state.shipping) {
-    set.add(state.shipping.frais);
-    set.add(state.shipping.delai_h);
-  }
-  if (state.remise) {
-    set.add(state.remise.accordee_pct);
-    set.add(state.remise.demandee_pct);
-  }
-  const cartTotal = state.cart.reduce((s, c) => s + c.qte * c.prix_unitaire, 0);
-  const shippingFee = state.shipping?.frais ?? 0;
-  set.add(cartTotal);
-  set.add(cartTotal + shippingFee);
+  const add = (v: unknown) => {
+    if (typeof v === "number" && Number.isFinite(v)) set.add(v);
+    else if (Array.isArray(v)) v.forEach(add);
+    else if (v && typeof v === "object") Object.values(v as Record<string, unknown>).forEach(add);
+  };
+  state.facts.forEach((f: Fact) => add(f.value));
+  for (const i of state.cart) { add(i.qte); add(i.prix_unitaire); add(i.qte * i.prix_unitaire); }
+  if (state.shipping) add(state.shipping);
+  if (state.remise) add(state.remise);
   return set;
 }
 
-function addNumbersFromValue(value: unknown, set: Set<number>) {
-  if (typeof value === "number") {
-    set.add(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((v) => addNumbersFromValue(v, set));
-    return;
-  }
-  if (value && typeof value === "object") {
-    Object.values(value as Record<string, unknown>).forEach((v) => addNumbersFromValue(v, set));
-  }
-}
+export { foldText };

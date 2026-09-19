@@ -25,7 +25,7 @@ export async function multimodal_node(state: KenzaState, input: MultimodalInput)
 
   try {
     if (input.kind === "audio") {
-      const llm = buildLlm({ temperature: 0 });
+      const llm = buildLlm();
       // Le endpoint Numeos étant compatible OpenAI, la transcription passe
       // par le même client, en confiant l'audio comme pièce jointe au modèle
       // multimodal si le modèle configuré le supporte. Si l'appel échoue,
@@ -40,7 +40,7 @@ export async function multimodal_node(state: KenzaState, input: MultimodalInput)
     }
 
     if (input.kind === "image") {
-      const llm = buildLlm({ temperature: 0 });
+      const llm = buildLlm();
       const res = await llm.invoke([
         {
           role: "system",

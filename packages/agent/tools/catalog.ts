@@ -1,4 +1,5 @@
 import { pool } from "../../db/pool";
+import { foldText } from "../text";
 
 /**
  * Tous les tools de ce fichier sont des fonctions déterministes qui lisent
@@ -7,16 +8,63 @@ import { pool } from "../../db/pool";
  * `fact` traçable (source: "db:...").
  */
 
-async function getActivePromo(ref: string, atDate = new Date()) {
-  const { rows } = await pool.query(
-    `SELECT * FROM promotions WHERE ref = $1 AND debut <= $2 AND fin >= $2 ORDER BY id DESC LIMIT 1`,
-    [ref, atDate.toISOString().slice(0, 10)]
-  );
-  return rows[0] ?? null;
+const FOLD_SQL = (col: string) =>
+  `translate(lower(${col}), 'àâäáãéèêëíìîïóòôöõúùûüçñ', 'aaaaaeeeeiiiiooooouuuucn')`;
+
+export function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Produit + prix effectif (promo active à la date donnée prioritaire sur le prix normal). */
+const PRODUCT_WITH_PROMO = `
+  SELECT p.*, pr.id AS promo_id, pr.prix_promo_mad, pr.fin AS promo_fin,
+         COALESCE(pr.prix_promo_mad, p.prix_mad) AS prix_effectif_mad
+  FROM products p
+  LEFT JOIN LATERAL (
+    SELECT id, prix_promo_mad, fin FROM promotions
+    WHERE ref = p.ref AND debut <= $1::date AND fin >= $1::date
+    ORDER BY id DESC LIMIT 1
+  ) pr ON true`;
+
+export interface ProductRow {
+  ref: string;
+  modele: string;
+  famille: string;
+  genre: string;
+  couleur: string;
+  taille: string;
+  matiere: string;
+  prix_mad: number;
+  stock: number;
+  promo_id: number | null;
+  prix_promo_mad: number | null;
+  promo_fin: string | null;
+  prix_effectif_mad: number;
+}
+
+export async function getProduct(ref: string, date = today()): Promise<ProductRow | null> {
+  const { rows } = await pool.query(`${PRODUCT_WITH_PROMO} WHERE p.ref = $2`, [date, ref]);
+  return (rows[0] as ProductRow) ?? null;
+}
+
+function toCatalogItem(p: ProductRow) {
+  return {
+    ref: p.ref,
+    modele: p.modele,
+    famille: p.famille,
+    couleur: p.couleur,
+    taille: p.taille,
+    prix_mad: p.prix_mad,
+    prix_effectif_mad: p.prix_effectif_mad,
+    stock: p.stock,
+    disponible: p.stock > 0,
+    promo_active: p.promo_id !== null,
+  };
 }
 
 export interface SearchCatalogArgs {
   famille?: string;
+  modele?: string;
   couleur?: string;
   taille?: string;
   genre?: string;
@@ -27,39 +75,24 @@ export interface SearchCatalogArgs {
 
 export async function search_catalog(args: SearchCatalogArgs) {
   const conditions: string[] = [];
-  const params: unknown[] = [];
-  let i = 1;
+  const params: unknown[] = [today()];
+  const add = (sql: string, value: unknown) => {
+    params.push(value);
+    conditions.push(sql.replace("$?", `$${params.length}`));
+  };
 
-  if (args.famille) { conditions.push(`famille ILIKE $${i++}`); params.push(`%${args.famille}%`); }
-  if (args.couleur) { conditions.push(`couleur ILIKE $${i++}`); params.push(`%${args.couleur}%`); }
-  if (args.taille) { conditions.push(`taille = $${i++}`); params.push(args.taille); }
-  if (args.genre) { conditions.push(`genre ILIKE $${i++}`); params.push(`%${args.genre}%`); }
-  if (args.matiere) { conditions.push(`matiere ILIKE $${i++}`); params.push(`%${args.matiere}%`); }
-  if (args.prix_max !== undefined) { conditions.push(`prix_mad <= $${i++}`); params.push(args.prix_max); }
-  if (args.en_stock_seulement) { conditions.push(`stock > 0`); }
+  if (args.famille) add(`${FOLD_SQL("p.famille")} LIKE $?`, `%${foldText(args.famille)}%`);
+  if (args.modele) add(`${FOLD_SQL("p.modele")} LIKE $?`, `%${foldText(args.modele)}%`);
+  if (args.couleur) add(`${FOLD_SQL("p.couleur")} LIKE $?`, `%${foldText(args.couleur)}%`);
+  if (args.taille) add(`lower(p.taille) = $?`, args.taille.trim().toLowerCase());
+  if (args.genre) add(`${FOLD_SQL("p.genre")} LIKE $?`, `%${foldText(args.genre)}%`);
+  if (args.matiere) add(`${FOLD_SQL("p.matiere")} LIKE $?`, `%${foldText(args.matiere)}%`);
+  if (args.prix_max !== undefined) add(`COALESCE(pr.prix_promo_mad, p.prix_mad) <= $?`, args.prix_max);
+  if (args.en_stock_seulement) conditions.push(`p.stock > 0`);
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const { rows } = await pool.query(
-    `SELECT * FROM products ${where} ORDER BY modele LIMIT 20`,
-    params
-  );
-
-  const out = [];
-  for (const p of rows) {
-    const promo = await getActivePromo(p.ref);
-    out.push({
-      ref: p.ref,
-      modele: p.modele,
-      famille: p.famille,
-      couleur: p.couleur,
-      taille: p.taille,
-      prix_mad: p.prix_mad,
-      prix_effectif_mad: promo ? promo.prix_promo_mad : p.prix_mad,
-      stock: p.stock,
-      promo_active: !!promo,
-    });
-  }
-  return out;
+  const { rows } = await pool.query(`${PRODUCT_WITH_PROMO} ${where} ORDER BY p.modele, p.taille, p.ref LIMIT 15`, params);
+  return (rows as ProductRow[]).map(toCatalogItem);
 }
 
 export interface CheckStockArgs {
@@ -71,62 +104,62 @@ export interface CheckStockArgs {
 
 export async function check_stock(args: CheckStockArgs) {
   if (args.ref) {
-    const { rows } = await pool.query(`SELECT ref, stock FROM products WHERE ref = $1`, [args.ref]);
-    if (!rows[0]) return { disponible: false, stock: 0, ref: args.ref, trouve: false };
-    return { disponible: rows[0].stock > 0, stock: rows[0].stock, ref: rows[0].ref, trouve: true };
+    const p = await getProduct(args.ref.trim().toUpperCase());
+    if (!p) return { trouve: false, disponible: false, stock: 0, ref: args.ref };
+    return { trouve: true, disponible: p.stock > 0, stock: p.stock, ref: p.ref, modele: p.modele, taille: p.taille };
   }
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let i = 1;
-  if (args.modele) { conditions.push(`modele ILIKE $${i++}`); params.push(`%${args.modele}%`); }
-  if (args.couleur) { conditions.push(`couleur ILIKE $${i++}`); params.push(`%${args.couleur}%`); }
-  if (args.taille) { conditions.push(`taille = $${i++}`); params.push(args.taille); }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const { rows } = await pool.query(`SELECT ref, stock FROM products ${where} LIMIT 1`, params);
-  if (!rows[0]) return { disponible: false, stock: 0, ref: null, trouve: false };
-  return { disponible: rows[0].stock > 0, stock: rows[0].stock, ref: rows[0].ref, trouve: true };
+  const matches = await search_catalog({ modele: args.modele, couleur: args.couleur, taille: args.taille });
+  if (matches.length === 0) return { trouve: false, disponible: false, stock: 0, ref: null };
+  if (matches.length > 1) {
+    // Plusieurs références possibles : on ne devine jamais, on renvoie les candidats.
+    return {
+      trouve: true,
+      ambigu: true,
+      disponible: matches.some((m) => m.stock > 0),
+      stock: matches.reduce((s, m) => s + m.stock, 0),
+      ref: null,
+      candidats: matches.map((m) => ({ ref: m.ref, modele: m.modele, taille: m.taille, stock: m.stock })),
+    };
+  }
+  const m = matches[0];
+  return { trouve: true, disponible: m.stock > 0, stock: m.stock, ref: m.ref, modele: m.modele, taille: m.taille };
 }
 
 export async function suggest_alternatives(args: { ref: string }) {
-  const { rows: base } = await pool.query(`SELECT * FROM products WHERE ref = $1`, [args.ref]);
-  if (!base[0]) return [];
-  const p = base[0];
+  const base = await getProduct(args.ref.trim().toUpperCase());
+  if (!base) return [];
   const { rows } = await pool.query(
-    `SELECT * FROM products
-     WHERE famille = $1 AND stock > 0 AND ref != $2
-     ORDER BY
-       (couleur = $3)::int DESC,
-       (taille = $4)::int DESC,
-       ABS(prix_mad - $5) ASC
-     LIMIT 5`,
-    [p.famille, p.ref, p.couleur, p.taille, p.prix_mad]
+    `${PRODUCT_WITH_PROMO}
+     WHERE p.famille = $2 AND p.stock > 0 AND p.ref <> $3
+     ORDER BY (p.modele = $4)::int DESC, (p.couleur = $5)::int DESC, (p.taille = $6)::int DESC,
+              ABS(COALESCE(pr.prix_promo_mad, p.prix_mad) - $7) ASC, p.ref
+     LIMIT 4`,
+    [today(), base.famille, base.ref, base.modele, base.couleur, base.taille, base.prix_effectif_mad]
   );
-  const out = [];
-  for (const alt of rows) {
-    const promo = await getActivePromo(alt.ref);
-    out.push({
-      ref: alt.ref,
-      modele: alt.modele,
-      couleur: alt.couleur,
-      taille: alt.taille,
-      prix_effectif_mad: promo ? promo.prix_promo_mad : alt.prix_mad,
-      stock: alt.stock,
-    });
-  }
-  return out;
+  return (rows as ProductRow[]).map((p) => ({
+    ref: p.ref,
+    modele: p.modele,
+    couleur: p.couleur,
+    taille: p.taille,
+    prix_effectif_mad: p.prix_effectif_mad,
+    stock: p.stock,
+    promo_active: p.promo_id !== null,
+    remplace: base.ref,
+  }));
 }
 
 export async function get_price(args: { ref: string }) {
-  const { rows } = await pool.query(`SELECT * FROM products WHERE ref = $1`, [args.ref]);
-  if (!rows[0]) return { trouve: false };
-  const p = rows[0];
-  const promo = await getActivePromo(p.ref);
+  const p = await getProduct(args.ref.trim().toUpperCase());
+  if (!p) return { trouve: false };
   return {
     trouve: true,
+    ref: p.ref,
+    modele: p.modele,
+    taille: p.taille,
     prix_normal: p.prix_mad,
-    prix_promo: promo ? promo.prix_promo_mad : undefined,
-    prix_effectif: promo ? promo.prix_promo_mad : p.prix_mad,
-    promo_id: promo ? promo.id : undefined,
-    valide_jusquau: promo ? promo.fin : undefined,
+    prix_promo: p.prix_promo_mad ?? undefined,
+    prix_effectif: p.prix_effectif_mad,
+    promo_id: p.promo_id ?? undefined,
+    valide_jusquau: p.promo_fin ?? undefined,
   };
 }

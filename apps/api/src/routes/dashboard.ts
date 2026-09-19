@@ -56,7 +56,7 @@ export function registerDashboardRoutes(app: FastifyInstance) {
 
   app.post("/api/conversations/:id/resume-human", async (req) => {
     const { id } = req.params as { id: string };
-    await pool.query(`UPDATE conversations SET needs_human = true, statut = 'needs_human' WHERE id = $1`, [id]);
+    await pool.query(`UPDATE conversations SET needs_human = true, human_active = true, statut = 'needs_human' WHERE id = $1`, [id]);
     await pool.query(`UPDATE escalations SET statut = 'IN_PROGRESS' WHERE conversation_id = $1 AND statut = 'NEEDS_HUMAN_REVIEW'`, [id]);
     return { ok: true };
   });
@@ -130,5 +130,26 @@ export function registerDashboardRoutes(app: FastifyInstance) {
       [`%${q ?? ""}%`]
     );
     return rows;
+  });
+
+  app.post("/api/clients", async (req, reply) => {
+    const body = req.body as { nom?: string; telephone?: string; ville?: string; langue_preferee?: string };
+    if (!body.nom?.trim() || !body.telephone?.trim() || !body.ville?.trim()) {
+      return reply.code(400).send({ error: "nom, telephone et ville sont requis" });
+    }
+    const langue = body.langue_preferee === "ar" || body.langue_preferee === "darija" ? body.langue_preferee : "fr";
+    const clientId = `WEB-${Date.now()}`;
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO clients (client_id, nom, telephone, ville, langue_preferee, nb_commandes, segment)
+         VALUES ($1,$2,$3,$4,$5,0,'nouveau')
+         RETURNING client_id, nom, telephone, ville, langue_preferee`,
+        [clientId, body.nom.trim(), body.telephone.trim(), body.ville.trim(), langue]
+      );
+      return reply.code(201).send(rows[0]);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") return reply.code(409).send({ error: "Ce téléphone existe déjà" });
+      throw error;
+    }
   });
 }

@@ -125,3 +125,22 @@ CREATE TABLE IF NOT EXISTS relances (
   envoyee_a TIMESTAMPTZ,
   resultat TEXT -- pending | sent | converted | ignored | skipped_out_of_hours
 );
+
+-- ---------------------------------------------------------------------------
+-- Extensions du schéma (idempotentes) : colonnes ajoutées après le schéma de base
+-- ---------------------------------------------------------------------------
+-- human_active : le commerçant a repris la main -> l'agent est désactivé pour cette conversation.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS human_active BOOLEAN NOT NULL DEFAULT false;
+-- remise déjà accordée (plafonnée en code) et appliquée à la commande.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS remise_pct INT NOT NULL DEFAULT 0;
+-- lien commande <-> conversation (KPI de conversion fiable).
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS conversation_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS remise_mad INT NOT NULL DEFAULT 0;
+-- messages non encore intégrés au fil LangGraph (ex. relance envoyée par le worker).
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS synced BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS trace JSONB;
+ALTER TABLE relances ADD COLUMN IF NOT EXISTS texte TEXT;
+ALTER TABLE relances ADD COLUMN IF NOT EXISTS converted_order_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_orders_conversation ON orders(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_relances_conversation ON relances(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_escalations_conversation ON escalations(conversation_id, statut);

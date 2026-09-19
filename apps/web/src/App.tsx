@@ -6,15 +6,18 @@ export default function App() {
   const [view, setView] = useState<"chat" | "dashboard">("chat");
 
   return (
-    <div className="min-h-screen">
-      <header className="bg-slate-900 text-white px-6 py-3 flex items-center justify-between">
-        <div className="font-semibold text-lg">Kenza <span className="text-slate-400 font-normal text-sm">— agent commercial</span></div>
-        <nav className="flex gap-2">
-          <button onClick={() => setView("chat")} className={`px-3 py-1 rounded text-sm ${view === "chat" ? "bg-blue-600" : "bg-slate-700"}`}>Simulateur de chat</button>
-          <button onClick={() => setView("dashboard")} className={`px-3 py-1 rounded text-sm ${view === "dashboard" ? "bg-blue-600" : "bg-slate-700"}`}>Dashboard commerçant</button>
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark">K</div>
+          <div><div className="brand-name">Kenza</div><div className="brand-subtitle">Assistant commercial marocain</div></div>
+        </div>
+        <nav className="main-nav" aria-label="Navigation principale">
+          <button onClick={() => setView("chat")} className={`nav-button ${view === "chat" ? "active" : ""}`}>Conversation</button>
+          <button onClick={() => setView("dashboard")} className={`nav-button ${view === "dashboard" ? "active" : ""}`}>Pilotage</button>
         </nav>
       </header>
-      <main className="p-6 max-w-7xl mx-auto">
+      <main className="page-wrap">
         {view === "chat" ? <ChatSimulator /> : <Dashboard />}
       </main>
     </div>
