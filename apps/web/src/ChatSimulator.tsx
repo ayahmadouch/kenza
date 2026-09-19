@@ -160,15 +160,7 @@ export default function ChatSimulator() {
               </div>
               {m.role === "agent" && (
                 <div className="text-xs text-slate-400 mt-1">
-                  {m.latency_ms != null && <span>{m.latency_ms}ms · </span>}
-                  {m.guardrail && <span className={m.guardrail.ok ? "text-green-600" : "text-red-600"}>guardrail: {m.guardrail.ok ? "PASS" : "FAIL"} · </span>}
-                  {m.escalation && <span className="text-orange-600">escaladé: {m.escalation.motif}</span>}
-                  {m.trace && (
-                    <details className="inline">
-                      <summary style={{ cursor: "pointer" }}>trace ({m.trace.length})</summary>
-                      <pre className="surface" style={{ textAlign: "left", padding: 10, marginTop: 5, overflowX: "auto" }}>{JSON.stringify(m.trace, null, 2)}</pre>
-                    </details>
-                  )}
+                  {m.escalation && <span className="text-orange-600">Notre équipe va prendre le relais.</span>}
                 </div>
               )}
               </div>
