@@ -1,11 +1,34 @@
 node_modules/
 dist/
 build/
+.cache/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Local environment and secrets
 .env
 .env.*
 !.env.example
-replay-report.json
+secrets/
+*.key
+*.pem
+
+# Logs and generated reports
 *.log
-.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+replay-report.json
+
+# Local databases and service data
 postgres-data/
 redis-data/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vs/
