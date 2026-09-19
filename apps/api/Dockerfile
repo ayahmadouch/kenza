@@ -1,26 +1,18 @@
-FROM node:20-slim AS base
-WORKDIR /repo
+FROM node:20-alpine
+WORKDIR /app
 
-# On copie tout le monorepo : nécessaire pour resoudre les workspaces
-# npm (@kenza/db, @kenza/agent) sans registre privé.
-COPY package.json package-lock.json* ./
-COPY tsconfig.base.json ./
-COPY apps/api/package.json apps/api/
-COPY apps/web/package.json apps/web/
-COPY packages/db/package.json packages/db/
-COPY packages/agent/package.json packages/agent/
+COPY package.json ./
+RUN npm install
 
-RUN npm install --workspaces --include-workspace-root
+COPY tsconfig.json ./
+COPY packages ./packages
+COPY apps/api ./apps/api
+COPY data ./data
 
-COPY packages/db packages/db
-COPY packages/agent packages/agent
-COPY apps/api apps/api
-COPY data data
+ENV DATA_DIR=/app/data
 
-WORKDIR /repo/apps/api
+EXPOSE 4000
 
-EXPOSE 3001
-
-# Le serveur applique lui-même les migrations + le seeder au démarrage
-# (bootstrapDatabase) : aucune étape manuelle après `docker compose up`.
-CMD ["npx", "tsx", "src/server.ts"]
+# Le seeder est idempotent et FAIL FAST si les volumes sont incorrects :
+# aucune migration manuelle n'est nécessaire après le démarrage.
+CMD sh -c "npm run seed && npm run start:api"

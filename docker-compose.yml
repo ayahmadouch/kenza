@@ -1,97 +1,97 @@
+version: "3.9"
+
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: kenza-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: kenza
-      POSTGRES_PASSWORD: kenza
-      POSTGRES_DB: kenza
-    volumes:
-      - kenza_pg_data:/var/lib/postgresql/data
+      POSTGRES_USER: ${POSTGRES_USER:-kenza}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kenza}
+      POSTGRES_DB: ${POSTGRES_DB:-kenza}
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kenza -d kenza"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kenza} -d ${POSTGRES_DB:-kenza}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7-alpine
+    container_name: kenza-redis
     restart: unless-stopped
-    volumes:
-      - kenza_redis_data:/data
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    container_name: kenza-api
     restart: unless-stopped
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql://kenza:kenza@postgres:5432/kenza
+      DATABASE_URL: postgres://${POSTGRES_USER:-kenza}:${POSTGRES_PASSWORD:-kenza}@postgres:5432/${POSTGRES_DB:-kenza}
       REDIS_URL: redis://redis:6379
-      LLM_BASE_URL: ${LLM_BASE_URL}
-      LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL}
-      DEMO_DELAY_MINUTES: ${DEMO_DELAY_MINUTES:-}
-      PORT: 3001
     ports:
-      - "3001:3001"
+      - "4000:4000"
+    volumes:
+      - ./data:/app/data:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 20s
+      retries: 15
+      start_period: 30s
 
   worker:
     build:
       context: .
-      dockerfile: apps/api/Dockerfile
+      dockerfile: packages/worker/Dockerfile
+    container_name: kenza-worker
     restart: unless-stopped
-    command: ["npx", "tsx", "src/worker.ts"]
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql://kenza:kenza@postgres:5432/kenza
+      DATABASE_URL: postgres://${POSTGRES_USER:-kenza}:${POSTGRES_PASSWORD:-kenza}@postgres:5432/${POSTGRES_DB:-kenza}
       REDIS_URL: redis://redis:6379
-      LLM_BASE_URL: ${LLM_BASE_URL}
-      LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL}
-      DEMO_DELAY_MINUTES: ${DEMO_DELAY_MINUTES:-}
-      PORT: 3001
+    volumes:
+      - ./data:/app/data:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       api:
-        condition: service_healthy
+        condition: service_started
 
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+    container_name: kenza-web
     restart: unless-stopped
     environment:
-      VITE_API_URL: http://localhost:3001
-      VITE_API_TARGET: http://api:3001
+      VITE_API_URL: http://localhost:4000
     ports:
       - "5173:5173"
     depends_on:
-      api:
-        condition: service_healthy
+      - api
 
 volumes:
-  kenza_pg_data:
-  kenza_redis_data:
+  postgres-data:
+  redis-data:

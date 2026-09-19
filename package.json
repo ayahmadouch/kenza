@@ -1,23 +1,49 @@
 {
   "name": "kenza",
   "private": true,
-  "version": "0.1.0",
-  "description": "Kenza — agent commercial autonome (Numeos Hack 2026, Sujet 02)",
+  "version": "1.0.0",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "seed": "tsx scripts/seed.ts",
-    "db:migrate": "tsx packages/db/src/migrate.ts",
-    "dev:api": "npm run dev -w apps/api",
-    "dev:web": "npm run dev -w apps/web",
-    "replay": "tsx scripts/replay-conversations.ts"
+    "seed": "tsx packages/db/seeder/seed.ts",
+    "test:tools": "tsx packages/agent/tools/tools.test.ts",
+    "test:replay": "tsx scripts/replay-conversations.ts",
+    "start:api": "tsx apps/api/src/index.ts",
+    "start:worker": "tsx packages/worker/src/index.ts",
+    "dev:api": "tsx watch apps/api/src/index.ts",
+    "dev:worker": "tsx watch packages/worker/src/index.ts",
+    "dev:web": "vite --config apps/web/vite.config.ts --host"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/websocket": "^10.0.1",
+    "@langchain/core": "^0.3.18",
+    "@langchain/langgraph": "^0.2.19",
+    "@langchain/langgraph-checkpoint-postgres": "^0.0.3",
+    "@langchain/openai": "^0.3.14",
+    "bullmq": "^5.21.2",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1",
+    "redis": "^4.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "tailwindcss": "^3.4.14",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
     "typescript": "^5.6.3",
-    "tsx": "^4.19.1",
-    "@types/node": "^22.7.5",
-    "dotenv": "^16.4.5"
+    "tsx": "^4.19.2",
+    "vite": "^5.4.10"
   }
 }

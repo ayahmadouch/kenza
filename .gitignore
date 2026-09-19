@@ -1,34 +1,8 @@
-# Secrets and local environment
-.env
-.env.*
-!.env.example
-
-# Dependencies
 node_modules/
-
-# Build output
-**/dist/
-**/build/
-**/.vite/
-
-# Runtime and debug files
+dist/
+build/
+.env
 *.log
-logs/
-coverage/
-.nyc_output/
-
-# Local databases and Docker overrides
-*.sqlite
-*.sqlite3
-docker-compose.override.yml
-
-# TypeScript and tooling caches
-*.tsbuildinfo
-.cache/
-
-# OS and editor files
 .DS_Store
-Thumbs.db
-.vscode/
-.idea/
-*.swp
+postgres-data/
+redis-data/

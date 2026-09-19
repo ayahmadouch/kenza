@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noImplicitAny": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "dist",
+    "declaration": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "exclude": ["node_modules", "dist", "apps/web"]
+}
