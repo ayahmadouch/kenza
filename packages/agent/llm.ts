@@ -1,6 +1,5 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { createHash } from "crypto";
-import { LLM_BASE_URL } from "./config";
 
 /**
  * Client LLM générique compatible OpenAI. Aucun code spécifique à un
@@ -9,11 +8,11 @@ import { LLM_BASE_URL } from "./config";
  * de raisonnement (gpt-5...) refusent ce paramètre.
  */
 export function llmConfigured(): boolean {
-  return !!(process.env.LLM_API_KEY && LLM_BASE_URL);
+  return !!(process.env.LLM_API_KEY && process.env.LLM_BASE_URL);
 }
 
 export function buildLlm() {
-  const baseURL = LLM_BASE_URL;
+  const baseURL = process.env.LLM_BASE_URL;
   const apiKey = process.env.LLM_API_KEY;
   const model = process.env.LLM_MODEL || "gpt-5.5";
   if (!apiKey || !baseURL) throw new Error("LLM_BASE_URL / LLM_API_KEY manquants (voir .env.example).");

@@ -1,83 +1,110 @@
 import { StateGraph, START, END, Annotation } from "@langchain/langgraph";
-import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { BaseMessage } from "@langchain/core/messages";
-import type { CartItem, Fact, Intention, Langue, TraceEvent } from "./types";
+import type { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
+import type { KenzaState } from "./types";
+import { multimodal_node } from "./nodes/multimodal_node";
 import { intent_node } from "./nodes/intent_node";
 import { catalogue_node } from "./nodes/catalogue_node";
 import { conversation_node } from "./nodes/conversation_node";
 import { guardrail_node, routeAfterGuardrail } from "./nodes/guardrail_node";
 import { escalation_node } from "./nodes/escalation_node";
+import { respond_node } from "./nodes/respond_node";
 
 /**
- * État du graphe, aligné sur KenzaState (packages/agent/types.ts). Chaque
- * canal a une fonction de réduction "dernier écrasant" sauf les tableaux
- * cumulatifs (messages, facts, trace) qui se concatènent.
+ * Canal "dernier écrasant". `null` en entrée = remise à zéro (utilisé par ws.ts
+ * pour réinitialiser les champs propres à UN tour, sans toucher à la mémoire longue).
+ */
+function last<T>(def?: () => T) {
+  return Annotation<T | undefined>({ reducer: (_a, b) => (b === null ? undefined : (b as T | undefined)), default: def ? def : () => undefined });
+}
+function lastList<T>() {
+  return Annotation<T[]>({ reducer: (_a, b) => (b ?? []) as T[], default: () => [] });
+}
+
+/**
+ * État du graphe = KenzaState (types.ts).
+ * - `messages` est CUMULATIF : c'est la mémoire longue persistée par le checkpointer PostgreSQL (thread = client).
+ * - tout le reste est propre au tour ou reconstruit depuis PostgreSQL (panier, ville...).
  */
 export const StateAnnotation = Annotation.Root({
   conversationId: Annotation<string>(),
-  clientId: Annotation<string | undefined>(),
-  telephone: Annotation<string | undefined>(),
-  langue: Annotation<Langue>({ reducer: (_, b) => b, default: () => "fr" }),
+  clientId: last<string>(),
+  telephone: last<string>(),
+  langue: Annotation<KenzaState["langue"]>({ reducer: (_a, b) => b ?? "fr", default: () => "fr" }),
   messages: Annotation<BaseMessage[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
-  intention: Annotation<Intention | undefined>(),
-  intentConfidence: Annotation<number | undefined>(),
-  facts: Annotation<Fact[]>({ reducer: (_, b) => b, default: () => [] }),
-  cart: Annotation<CartItem[]>({ reducer: (_, b) => b, default: () => [] }),
-  ville: Annotation<string | undefined>(),
-  shipping: Annotation<KenzaShipping | undefined>(),
-  remise: Annotation<KenzaRemise | undefined>(),
-  draft: Annotation<string | undefined>(),
-  guardrail: Annotation<KenzaGuardrail | undefined>(),
-  escalation: Annotation<KenzaEscalation | undefined>(),
-  orderId: Annotation<string | undefined>(),
-  needsHuman: Annotation<boolean>({ reducer: (_, b) => b, default: () => false }),
-  trace: Annotation<TraceEvent[]>({ reducer: (_, b) => b, default: () => [] }),
+  intention: last<KenzaState["intention"]>(),
+  intentConfidence: last<number>(),
+  escalationCode: last<string>(),
+  facts: lastList<KenzaState["facts"][number]>(),
+  cart: lastList<KenzaState["cart"][number]>(),
+  ville: last<string>(),
+  shipping: last<KenzaState["shipping"]>(),
+  remise: last<KenzaState["remise"]>(),
+  draft: last<string>(),
+  guardrail: last<KenzaState["guardrail"]>(),
+  escalation: last<KenzaState["escalation"]>(),
+  orderId: last<string>(),
+  needsHuman: Annotation<boolean>({ reducer: (_a, b) => b ?? false, default: () => false }),
+  media: last<KenzaState["media"]>(),
+  transcript: last<string>(),
+  confirmation: last<boolean>(),
+  trace: lastList<KenzaState["trace"][number]>(),
 });
 
-type KenzaShipping = { frais: number; delai_h: number; cod: boolean; retrait: boolean };
-type KenzaRemise = { demandee_pct: number; accordee_pct: number };
-type KenzaGuardrail = { ok: boolean; violations: string[]; retries: number };
-type KenzaEscalation = { motif: string; contexte: string };
+type S = typeof StateAnnotation.State;
+// Les nœuds sont typés sur KenzaState ; les deux types sont structurellement équivalents.
+const asNode = (fn: (s: KenzaState) => Promise<Partial<KenzaState>>) => fn as unknown as (s: S) => Promise<Partial<S>>;
 
-function routeAfterIntent(state: typeof StateAnnotation.State): "escalation" | "catalogue" | "conversation" {
-  if (state.needsHuman) return "escalation"; // ex: dégradation multimodale déjà décidée
-  if (state.intention === "inconnu" && (state.intentConfidence ?? 0) < 0.3) {
-    // Confiance très faible : on laisse conversation_node poser une clarification
-    // plutôt que d'escalader directement, sauf si le message évoque déjà une
-    // situation sensible (détecté plus tard par le guardrail sur le brouillon).
-    return "conversation";
-  }
-  return "catalogue";
-}
-
-export function buildKenzaGraph(checkpointer: PostgresSaver) {
-  const graph = new StateGraph(StateAnnotation)
-    .addNode("intent", intent_node)
-    .addNode("catalogue", catalogue_node)
-    .addNode("conversation", conversation_node)
-    .addNode("guardrail_check", guardrail_node)
-    .addNode("escalation_handler", escalation_node)
-    .addEdge(START, "intent")
-    .addConditionalEdges("intent", routeAfterIntent, {
-      escalation: "escalation_handler",
-      catalogue: "catalogue",
-      conversation: "conversation",
-    })
-    .addEdge("catalogue", "conversation")
-    .addEdge("conversation", "guardrail_check")
-    .addConditionalEdges("guardrail_check", routeAfterGuardrail, {
-      valid: END,
-      retry: "conversation",
-      escalate: "escalation_handler",
-    })
-    .addEdge("escalation_handler", END);
-
-  return graph.compile({ checkpointer });
+/** Après multimodal : panne STT/vision => escalade directe ; sinon classification. */
+export function routeAfterMultimodal(state: Pick<S, "needsHuman">): "escalation" | "intent" {
+  return state.needsHuman ? "escalation" : "intent";
 }
 
 /**
- * NB multimodal_node: la conversion audio/image -> texte est effectuée en
- * amont de l'invocation du graphe (apps/api), car elle transforme l'entrée
- * brute (base64) en message texte avant que l'état LangGraph ne soit
- * construit pour ce tour. Voir apps/api/src/ws.ts.
+ * Après intent :
+ *  - règle d'escalade déterministe déclenchée (ICE, réclamation, 30 %, ville inconnue...) => escalation
+ *  - confiance faible / inconnu => conversation (question de clarification, jamais de supposition)
+ *  - sinon => catalogue (tools réels)
  */
+export function routeAfterIntent(state: Pick<S, "needsHuman" | "intention">): "escalation" | "catalogue" | "conversation" {
+  if (state.needsHuman) return "escalation";
+  if (state.intention === "inconnu") return "conversation";
+  return "catalogue";
+}
+
+/** Après catalogue : un tool a imposé une escalade (ville hors grille, remise > plafond, produit inconnu...). */
+export function routeAfterCatalogue(state: Pick<S, "needsHuman">): "escalation" | "conversation" {
+  return state.needsHuman ? "escalation" : "conversation";
+}
+
+/** Après conversation : LLM indisponible => escalade propre, sinon guardrail. */
+export function routeAfterConversation(state: Pick<S, "needsHuman">): "escalation" | "guardrail" {
+  return state.needsHuman ? "escalation" : "guardrail";
+}
+
+export function buildKenzaGraph(checkpointer: PostgresSaver) {
+  return new StateGraph(StateAnnotation)
+    .addNode("multimodal", asNode(multimodal_node))
+    .addNode("intent", asNode(intent_node))
+    .addNode("catalogue", asNode(catalogue_node))
+    .addNode("conversation", asNode(conversation_node))
+    .addNode("guardrail_check", asNode(guardrail_node))
+    .addNode("respond", asNode(respond_node))
+    .addNode("escalation_handler", asNode(escalation_node))
+    .addEdge(START, "multimodal")
+    .addConditionalEdges("multimodal", routeAfterMultimodal, { escalation: "escalation_handler", intent: "intent" })
+    .addConditionalEdges("intent", routeAfterIntent, { escalation: "escalation_handler", catalogue: "catalogue", conversation: "conversation" })
+    .addConditionalEdges("catalogue", routeAfterCatalogue, { escalation: "escalation_handler", conversation: "conversation" })
+    .addConditionalEdges("conversation", routeAfterConversation, { escalation: "escalation_handler", guardrail: "guardrail_check" })
+    .addConditionalEdges("guardrail_check", routeAfterGuardrail, { valid: "respond", retry: "conversation", escalate: "escalation_handler" })
+    .addEdge("respond", END)
+    .addEdge("escalation_handler", END)
+    .compile({ checkpointer });
+}
+
+/** Valeurs de remise à zéro passées à chaque nouveau tour (voir `last`). */
+export const TURN_RESET = {
+  intention: null, intentConfidence: null, escalationCode: null, facts: null, draft: null, guardrail: null,
+  escalation: null, orderId: null, needsHuman: false, media: null, transcript: null, confirmation: null,
+  shipping: null, remise: null, trace: null,
+} as unknown as Partial<S>;

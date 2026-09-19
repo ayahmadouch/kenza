@@ -66,7 +66,9 @@ export async function intent_node(state: KenzaState): Promise<Partial<KenzaState
     source = "regles";
     out = fallback(text, heuristicLangDetect(text));
   }
-  const intention: Intention = out.confiance < 0.5 ? "inconnu" : out.intention;
+  let intention: Intention = out.confiance < 0.5 ? "inconnu" : out.intention;
+  if (state.media?.kind === "image") { intention = "photo_produit"; out.confiance = Math.max(out.confiance, 0.9); }
+  else if (state.media?.kind === "audio" && intention === "inconnu") intention = "note_vocale";
 
   const patch: Partial<KenzaState> = {
     intention,

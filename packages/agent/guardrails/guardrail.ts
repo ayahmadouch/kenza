@@ -8,7 +8,17 @@ const REASSORT = [
   "sera disponible", "redeviendra", "prochainement en stock", "restock", "back in stock", "nouvel arrivage",
   "ghadi yrj3", "ghadi ykon", "ghadi yji", "ghadi yweslo", "ghadi yrja3", "ghadi ywsl", "bnti", "غادي يرجع", "غادي يتوفر", "سيتوفر", "سيعود", "سيرجع", "سيتم توفير", "قريبا", "الاسبوع القادم", "الأسبوع القادم",
 ];
-const CASH_REFUND = ["remboursement en espèces", "remboursé en cash", "rembourse en espèces", "remboursée en espèces", "نرجع لك الفلوس", "استرجاع المبلغ نقدا"];
+const CASH_REFUND = ["rembours\\w* (?:en |par )?(?:especes|cash|liquide)", "(?:especes|cash|liquide).{0,20}rembours", "nrj3 lik (?:l)?flous", "نرجع لك الفلوس", "استرجاع المبلغ نقدا", "استرجاع (?:المبلغ|الفلوس) (?:نقدا|كاش)"].map((r) => new RegExp(r));
+const COD_RE = /(?:pay\w*|regl\w*|paiement|reglement)[^.!?]{0,30}(?:a la livraison|a la reception|cash)|a la livraison|\bcod\b|contre.?remboursement|cash on delivery|عند الاستلام|الدفع عند|khlas[^.!?]{0,15}(?:3nd|3and|f l?istilam|fl ?dar)|kanxlss[^.!?]{0,15}(?:3nd|3and)|(?:payer|paiement) cash/;
+const NEGATION = /\b(?:pas|non|impossible|indisponible|n'est pas|ne peut|ne peux|ne propose|jamais|aucun\w*|makaynach|makaynch|machi|ma kaynach|ma ymknch|ma nqderch|mamkinch)\b|(?:^|\s)(?:لا|ليس|غير|مكاين|ماكاين|ما)\s|غير متاح|غير متوفر/;
+
+/** Vrai si une phrase de `text` matche `re` sans négation ("le paiement à la livraison n'est pas disponible" est légitime). */
+function assertsSentence(text: string, re: RegExp): boolean {
+  return text.split(/(?<=[.!?؟\n])\s*/).some((sentence) => {
+    const f = foldText(sentence);
+    return (re.test(f) || re.test(sentence.toLowerCase())) && !NEGATION.test(f);
+  });
+}
 
 /** Le guardrail relit le texte final et les facts, jamais le raisonnement du LLM. */
 export function runGuardrail(state: KenzaState): { ok: boolean; violations: string[] } {
@@ -30,12 +40,12 @@ export function runGuardrail(state: KenzaState): { ok: boolean; violations: stri
   for (const ref of draft.match(/REF-\d{4}/g) ?? []) if (!knownRefs.has(ref)) violations.push(`Référence non issue d'un tool: ${ref}`);
 
   if (REASSORT.some((k) => lower.includes(k.toLowerCase()))) violations.push("Promesse de réassort détectée (interdit).");
-  if (CASH_REFUND.some((k) => lower.includes(k))) violations.push("Promesse de remboursement en espèces (doit escalader).");
+  if (CASH_REFUND.some((re) => assertsSentence(draft, re))) violations.push("Promesse de remboursement en espèces (doit escalader).");
   if (state.remise && state.remise.accordee_pct > DISCOUNT_MAX_PCT) violations.push(`Remise accordée > plafond ${DISCOUNT_MAX_PCT}%.`);
 
-  if (/paiement (?:à|a) la livraison|\bcod\b|عند الاستلام|الدفع عند|khlas 3nd|paiement cash/i.test(draft)) {
+  if (assertsSentence(draft, COD_RE)) {
     const ship = state.facts.find((f) => f.type === "shipping" && (f.value as { trouve?: boolean })?.trouve);
-    if (!ship || (ship.value as { cod?: boolean }).cod !== true) violations.push("Paiement à la livraison mentionné sans grille confirmant cod=true.");
+    if (!ship || (ship.value as { cod?: boolean }).cod !== true) violations.push("Paiement à la livraison proposé sans grille confirmant cod=true.");
   }
   return { ok: violations.length === 0, violations };
 }

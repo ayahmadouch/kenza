@@ -14,7 +14,12 @@
     "start:worker": "tsx packages/worker/src/index.ts",
     "dev:api": "tsx watch apps/api/src/index.ts",
     "dev:worker": "tsx watch packages/worker/src/index.ts",
-    "dev:web": "vite --config apps/web/vite.config.ts --host"
+    "dev:web": "vite --config apps/web/vite.config.ts --host",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
+    "test:unit": "tsx packages/agent/rules.test.ts && tsx packages/agent/guardrail.test.ts && tsx packages/worker/src/hours.test.ts",
+    "test:rules": "tsx packages/agent/rules.test.ts",
+    "test:guardrails": "tsx packages/agent/guardrail.test.ts",
+    "test": "npm run test:unit && npm run test:tools"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

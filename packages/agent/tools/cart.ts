@@ -34,10 +34,6 @@ function toItem(p: ProductRow, qte: number): CartItem {
   return { ref: p.ref, modele: p.modele, taille: p.taille, qte, prix_unitaire: p.prix_effectif_mad };
 }
 
-export type UpdateCartResult =
-  | { ok: true; cart: CartItem[]; total_articles_mad: number; ajoute?: unknown; retire?: CartItem; changement?: unknown }
-  | { ok: false; motif: string; cart: CartItem[]; total_articles_mad: number; candidats?: unknown; ref?: string; modele?: string; taille?: string; stock?: number; demande?: number; taille_demandee?: string; tailles_disponibles?: string[] };
-
 type Resolution =
   | { status: "ok"; product: ProductRow }
   | { status: "ambigu"; candidats: { ref: string; modele: string; taille: string; stock: number }[] }
@@ -73,11 +69,22 @@ function findCartIndex(cart: CartItem[], args: UpdateCartArgs): number {
   return -1;
 }
 
-export async function update_cart(args: UpdateCartArgs): Promise<UpdateCartResult> {
+export interface CartResult {
+  ok: boolean;
+  cart: CartItem[];
+  total_articles_mad: number;
+  motif?: string;
+  ref?: string;
+  candidats?: unknown;
+  tailles_disponibles?: unknown;
+  [extra: string]: unknown;
+}
+
+export async function update_cart(args: UpdateCartArgs): Promise<CartResult> {
   const cart = await loadCart(args.conversationId);
-  const done = async (extra: Record<string, unknown> = {}): Promise<Extract<UpdateCartResult, { ok: true }>> => {
+  const done = async (extra: Record<string, unknown> = {}) => {
     await saveCart(args.conversationId, cart);
-    return { ok: true, cart, total_articles_mad: cartTotal(cart), ...extra } as Extract<UpdateCartResult, { ok: true }>;
+    return { ok: true, cart, total_articles_mad: cartTotal(cart), ...extra };
   };
 
   if (args.action === "clear") {

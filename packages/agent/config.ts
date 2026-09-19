@@ -4,7 +4,6 @@
  * data/faq-boutique.md.
  */
 export const DISCOUNT_MAX_PCT = Number(process.env.DISCOUNT_MAX_PCT ?? 10);
-export const LLM_BASE_URL = process.env.LLM_BASE_URL ?? process.env.LLM_URL ?? "";
 
 export const POLICY = {
   retour_jours: 7, // échange ou avoir sous 7 jours (politique-commerciale.md)

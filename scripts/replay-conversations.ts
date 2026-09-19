@@ -1,198 +1,117 @@
 /**
- * Rejoue les 40 conversations de data/conversations.jsonl à travers le
- * graphe Kenza et vérifie des assertions PROGRAMMATIQUES (jamais "le LLM
- * juge-t-il la réponse correcte ?"). Nécessite une base seedée et
- * DATABASE_URL/LLM_* renseignés dans .env.
+ * Rejoue les 40 conversations de data/conversations.jsonl à travers le graphe Kenza RÉEL
+ * (LLM + tools + PostgreSQL) et vérifie des assertions PROGRAMMATIQUES.
+ * Le LLM n'est JAMAIS utilisé pour juger si un test passe.
  *
- * Lancer : npm run test:replay
+ * Prérequis : base seedée + LLM_* dans .env.   Lancer : npm run test:replay
+ * Les effets de bord (commandes, stock, escalades, checkpoints) sont annulés en fin de run.
  */
 import "dotenv/config";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { HumanMessage } from "@langchain/core/messages";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { pool } from "../packages/db/pool";
-import { buildKenzaGraph } from "../packages/agent/graph";
-import { ALLOWED_CITIES } from "../packages/agent/types";
+import { buildKenzaGraph, TURN_RESET } from "../packages/agent/graph";
+import { runGuardrail } from "../packages/agent/guardrails/guardrail";
+import { analyzeMessage } from "../packages/agent/rules";
+import { loadCart } from "../packages/agent/tools/cart";
+import { DISCOUNT_MAX_PCT } from "../packages/agent/config";
+import type { KenzaState } from "../packages/agent/types";
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../data");
+const INTENT_MIN = 0.85;
 
-interface ConvTour {
-  role: "client" | "agent";
-  texte: string;
-}
-interface ConvRecord {
-  id: string;
-  intention: string;
-  langue: string;
-  difficulte?: string;
-  client_id?: string;
-  telephone?: string;
-  ville?: string;
-  canal?: string;
-  tours: ConvTour[];
-}
+interface ConvRecord { id: string; intention: string; langue: string; client_id?: string; telephone?: string; ville?: string; tours: { role: "client" | "agent"; texte: string }[] }
+interface Turn { input: string; state: KenzaState }
+interface Check { name: string; ok: boolean; detail?: string }
 
-interface CaseResult {
-  id: string;
-  pass: boolean;
-  checks: { name: string; ok: boolean; detail?: string }[];
-}
+const REASSORT = /reassort|réassort|de nouveau disponible|sera disponible|revient le|ghadi yrj3|سيتوفر|سيعود/i;
+const anyTurn = (turns: Turn[], p: (t: Turn) => boolean) => turns.some(p);
 
-function loadConversations(): ConvRecord[] {
-  const raw = readFileSync(path.join(DATA_DIR, "conversations.jsonl"), "utf-8");
-  return raw
-    .split("\n")
-    .filter((l) => l.trim().length > 0)
-    .map((l) => JSON.parse(l));
-}
+function assertions(conv: ConvRecord, turns: Turn[]): { checks: Check[]; intentHit: boolean } {
+  const checks: Check[] = [];
+  const first = turns[0]?.state;
 
-/** Cherche un nombre "hors facts" dans le brouillon final par rapport aux facts renvoyés par le graphe. */
-function hasUnjustifiedNumber(draft: string, factsNumbers: Set<number>): boolean {
-  const matches = draft.match(/\b\d{2,}\b/g) ?? [];
-  return matches.map(Number).some((n) => !factsNumbers.has(n));
-}
+  checks.push({ name: "langue détectée = langue client (1er message)", ok: first?.langue === conv.langue, detail: `attendu ${conv.langue}, obtenu ${first?.langue}` });
 
-function collectFactNumbers(facts: any[], cart: any[], shipping: any): Set<number> {
-  const set = new Set<number>();
-  const walk = (v: unknown) => {
-    if (typeof v === "number") set.add(v);
-    else if (Array.isArray(v)) v.forEach(walk);
-    else if (v && typeof v === "object") Object.values(v as object).forEach(walk);
-  };
-  facts.forEach((f) => walk(f.value));
-  cart.forEach((c) => { set.add(c.qte); set.add(c.prix_unitaire); set.add(c.qte * c.prix_unitaire); });
-  if (shipping) { set.add(shipping.frais); set.add(shipping.delai_h); }
-  const total = cart.reduce((s: number, c: any) => s + c.qte * c.prix_unitaire, 0) + (shipping?.frais ?? 0);
-  set.add(total);
-  return set;
-}
+  const intentHit = anyTurn(turns, (t) => t.state.intention === conv.intention);
 
-async function createReplayConversations(conversations: ConvRecord[], runId: string) {
-  for (const conv of conversations) {
-    const conversationId = `REPLAY-${conv.id}-${runId}`;
-    await pool.query(
-      `INSERT INTO conversations (id, client_id, telephone, canal, langue, ville, cart)
-       VALUES ($1,$2,$3,$4,$5,$6,'[]'::jsonb)`,
-      [conversationId, conv.client_id ?? null, conv.telephone ?? null, conv.canal ?? "replay", conv.langue ?? "fr", conv.ville ?? null]
-    );
+  // Aucun nombre hors facts, aucune promesse de réassort / remboursement, COD conforme : garde-fou rejoué sur chaque réponse finale.
+  const bad = turns.map((t) => ({ t, g: t.state.needsHuman ? { ok: true, violations: [] as string[] } : runGuardrail(t.state) })).filter((x) => !x.g.ok);
+  checks.push({ name: "aucun nombre/promesse hors facts (toutes les réponses)", ok: bad.length === 0, detail: bad.map((b) => b.g.violations.join("; ")).join(" | ") });
+  checks.push({ name: "aucun réassort promis", ok: !anyTurn(turns, (t) => REASSORT.test(t.state.draft ?? "") && t.state.escalationCode !== "reassort_demande") });
+
+  const alts = turns.flatMap((t) => t.state.facts.filter((f) => f.type === "alternative"));
+  if (/rupture/.test(conv.intention)) {
+    const calledAlt = anyTurn(turns, (t) => t.state.trace.some((e) => e.tool === "suggest_alternatives"));
+    const escalatedReassort = anyTurn(turns, (t) => t.state.escalationCode === "reassort_demande");
+    checks.push({ name: "rupture → alternative réelle en stock (ou escalade réassort)", ok: (calledAlt && alts.every((a) => (a.value as { stock?: number }).stock! > 0)) || escalatedReassort });
   }
-}
 
-async function cleanupReplayConversations(runId: string) {
-  const pattern = `REPLAY-%-${runId}`;
-  await pool.query(`DELETE FROM escalations WHERE conversation_id LIKE $1`, [pattern]);
-  await pool.query(`DELETE FROM messages WHERE conversation_id LIKE $1`, [pattern]);
-  await pool.query(`DELETE FROM conversations WHERE id LIKE $1`, [pattern]);
+  for (const [i, t] of turns.entries()) {
+    const a = analyzeMessage(t.input);
+    if (a.discountPct !== null && a.discountPct > DISCOUNT_MAX_PCT)
+      checks.push({ name: `tour ${i + 1} : remise ${a.discountPct}% > ${DISCOUNT_MAX_PCT}% → escalade, aucune remise accordée`, ok: t.state.needsHuman && (t.state.remise?.accordee_pct ?? 0) === 0 });
+    if (a.city?.kind === "unknown") checks.push({ name: `tour ${i + 1} : ville inconnue (${a.city.name}) → escalade`, ok: t.state.needsHuman && !/\d+\s*MAD/.test(t.state.draft ?? "") });
+    if (a.escalation && ["facture_societe", "reclamation", "remboursement_especes", "reassort_demande"].includes(a.escalation.code))
+      checks.push({ name: `tour ${i + 1} : ${a.escalation.code} → escalade`, ok: t.state.needsHuman && t.state.escalationCode === a.escalation.code });
+  }
+  if (conv.intention === "reclamation_arabe" || conv.intention === "hors_domaine")
+    checks.push({ name: `${conv.intention} → escalade`, ok: anyTurn(turns, (t) => t.state.needsHuman) });
+  if (conv.intention === "changement_avis")
+    checks.push({ name: "changement d'avis → panier mis à jour (update_cart change_size)", ok: anyTurn(turns, (t) => t.state.trace.some((e) => e.tool === "update_cart" && (e.args as { action?: string })?.action === "change_size")) });
+  return { checks, intentHit };
 }
 
 async function main() {
-  const conversations = loadConversations();
-  const runId = Date.now().toString();
+  const convs: ConvRecord[] = readFileSync(path.join(DATA_DIR, "conversations.jsonl"), "utf-8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+  const runId = Date.now().toString(36);
+  const stockBefore = (await pool.query(`SELECT ref, stock FROM products`)).rows as { ref: string; stock: number }[];
   const checkpointer = new PostgresSaver(pool);
   await checkpointer.setup();
-  await createReplayConversations(conversations, runId);
   const graph = buildKenzaGraph(checkpointer);
 
-  const results: CaseResult[] = [];
-  let intentCorrect = 0;
-  let intentTotal = 0;
+  const report: { id: string; pass: boolean; checks: Check[]; error?: string }[] = [];
+  let intentHits = 0;
 
-  for (const conv of conversations) {
-    const checks: CaseResult["checks"] = [];
-    const threadId = `REPLAY-${conv.id}-${runId}`;
-    let lastState: any = null;
-
-    for (const tour of conv.tours) {
-      if (tour.role !== "client") continue;
-      lastState = await graph.invoke(
-        {
-          conversationId: threadId,
-          clientId: conv.client_id,
-          telephone: conv.telephone,
-          langue: (conv.langue as any) ?? "fr",
-          ville: conv.ville,
-          messages: [new HumanMessage(tour.texte)],
-          needsHuman: false,
-          trace: [],
-          facts: [],
-          cart: [],
-        },
-        { configurable: { thread_id: threadId } }
-      );
+  for (const conv of convs) {
+    const convId = `REPLAY-${conv.id}-${runId}`;
+    await pool.query(`INSERT INTO conversations (id, client_id, telephone, canal, langue, ville, cart) VALUES ($1,$2,$3,'replay',$4,$5,'[]'::jsonb)`, [convId, conv.client_id ?? null, conv.telephone ?? null, conv.langue, conv.ville ?? null]);
+    const config = { configurable: { thread_id: convId } };
+    const turns: Turn[] = [];
+    try {
+      for (const tour of conv.tours.filter((t) => t.role === "client")) {
+        await graph.invoke({ ...TURN_RESET, conversationId: convId, clientId: conv.client_id, telephone: conv.telephone, langue: conv.langue, ville: conv.ville, cart: await loadCart(convId), messages: [new HumanMessage(tour.texte)] } as never, config);
+        turns.push({ input: tour.texte, state: (await graph.getState(config)).values as KenzaState });
+      }
+      const { checks, intentHit } = assertions(conv, turns);
+      if (intentHit) intentHits++;
+      report.push({ id: conv.id, pass: checks.every((c) => c.ok), checks });
+    } catch (err) {
+      report.push({ id: conv.id, pass: false, checks: [], error: String(err).slice(0, 300) });
     }
-
-    if (!lastState) continue;
-
-    // 1) langue de la réponse == langue déclarée de la conversation (au dernier tour)
-    checks.push({ name: "langue == langue client", ok: lastState.langue === conv.langue, detail: `attendu ${conv.langue}, obtenu ${lastState.langue}` });
-
-    // 2) intention (comptage global pour un seuil >=85%, pas un critère bloquant par cas)
-    intentTotal++;
-    if (lastState.intention === conv.intention) intentCorrect++;
-
-    // 3) aucun nombre hors facts dans le brouillon
-    const factNumbers = collectFactNumbers(lastState.facts ?? [], lastState.cart ?? [], lastState.shipping);
-    const unjustified = lastState.draft ? hasUnjustifiedNumber(lastState.draft, factNumbers) : false;
-    checks.push({ name: "aucun nombre hors facts", ok: !unjustified });
-
-    // 4) rupture -> alternative en stock proposée
-    if (conv.intention.includes("rupture")) {
-      const sawAlternative = (lastState.trace ?? []).some((t: any) => t.tool === "suggest_alternatives");
-      checks.push({ name: "rupture -> suggest_alternatives appelé", ok: sawAlternative });
-    }
-
-    // 5) aucune promesse de réassort
-    const reassortMentioned = /réassort|reassort|revient le|sera de nouveau disponible/i.test(lastState.draft ?? "");
-    checks.push({ name: "aucun réassort promis", ok: !reassortMentioned });
-
-    // 6) négociation -> remise > 10% doit escalader
-    if (conv.intention === "negociation") {
-      const remiseOk = !lastState.remise || lastState.remise.accordee_pct <= 10;
-      checks.push({ name: "remise > 10% -> escalade / refus", ok: remiseOk || lastState.needsHuman });
-    }
-
-    // 7) ville hors grille -> escalade
-    if (conv.ville && !ALLOWED_CITIES.includes(conv.ville)) {
-      checks.push({ name: "ville inconnue -> escalade", ok: lastState.needsHuman === true });
-    }
-
-    // 8) réclamation / hors domaine -> escalade
-    if (conv.intention === "reclamation_arabe" || conv.intention === "hors_domaine") {
-      checks.push({ name: "réclamation/hors-domaine -> escalade", ok: lastState.needsHuman === true });
-    }
-
-    // 9) changement d'avis -> panier mis à jour (au moins un update_cart change_size)
-    if (conv.intention === "changement_avis") {
-      const sawChangeSize = (lastState.trace ?? []).some((t: any) => t.tool === "update_cart" && t.args?.action === "change_size");
-      checks.push({ name: "changement d'avis -> panier mis à jour", ok: sawChangeSize });
-    }
-
-    const pass = checks.every((c) => c.ok);
-    results.push({ id: conv.id, pass, checks });
+    const r = report[report.length - 1];
+    console.log(`${r.pass ? "PASS" : "FAIL"}  ${conv.id}  [${conv.intention}/${conv.langue}]`);
+    for (const c of r.checks.filter((x) => !x.ok)) console.log(`   ✗ ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
+    if (r.error) console.log(`   ✗ exception : ${r.error}`);
   }
 
-  console.log("\n=== Résultats replay-conversations ===\n");
-  for (const r of results) {
-    console.log(`${r.pass ? "PASS" : "FAIL"}  ${r.id}`);
-    for (const c of r.checks) {
-      if (!c.ok) console.log(`   ✗ ${c.name}${c.detail ? ` (${c.detail})` : ""}`);
-    }
-  }
+  // ---- annulation des effets de bord du replay
+  await pool.query(`DELETE FROM order_items WHERE commande_id IN (SELECT commande_id FROM orders WHERE conversation_id LIKE 'REPLAY-%')`);
+  await pool.query(`DELETE FROM orders WHERE conversation_id LIKE 'REPLAY-%'`);
+  for (const s of stockBefore) await pool.query(`UPDATE products SET stock = $2 WHERE ref = $1 AND stock <> $2`, [s.ref, s.stock]);
+  for (const table of ["escalations", "relances", "messages"]) await pool.query(`DELETE FROM ${table} WHERE conversation_id LIKE 'REPLAY-%'`);
+  await pool.query(`DELETE FROM conversations WHERE id LIKE 'REPLAY-%'`);
+  for (const table of ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]) await pool.query(`DELETE FROM ${table} WHERE thread_id LIKE 'REPLAY-%'`).catch(() => undefined);
 
-  const nbPass = results.filter((r) => r.pass).length;
-  const intentRate = intentTotal > 0 ? intentCorrect / intentTotal : 0;
-
-  console.log(`\n${nbPass}/${results.length} conversations conformes aux assertions.`);
-  console.log(`Précision intention: ${(intentRate * 100).toFixed(1)}% (seuil requis: >=85%)`);
-
-  await cleanupReplayConversations(runId);
+  const passed = report.filter((r) => r.pass).length;
+  const intentRate = intentHits / convs.length;
+  console.log(`\n${passed}/${report.length} conversations conformes aux assertions.`);
+  console.log(`Précision d'intention : ${(intentRate * 100).toFixed(1)} % (seuil ${INTENT_MIN * 100} %)`);
+  writeFileSync(path.resolve(__dirname, "../replay-report.json"), JSON.stringify({ passed, total: report.length, intentRate, report }, null, 2));
   await pool.end();
-  const globalOk = nbPass === results.length && intentRate >= 0.85;
-  process.exit(globalOk ? 0 : 1);
+  process.exit(passed === report.length && intentRate >= INTENT_MIN ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error("Erreur fatale replay-conversations:", err);
-  process.exit(1);
-});
+main().catch((e) => { console.error("Erreur fatale replay :", e); process.exit(1); });

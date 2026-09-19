@@ -1,178 +1,132 @@
-# Kenza — agent commercial autonome (#NumeosHack26, Sujet 02)
+# Kenza — l'agent commercial qui vend vraiment (#NumeosHack26 · Sujet 02)
 
-> **État vérifié au 19 septembre 2026.** Le projet compile, le frontend se construit,
-> les tests métier passent et `docker compose up -d --build` démarre les cinq services.
-> Un smoke test WebSocket avec une demande darija réelle a produit une réponse guardrailée
-> avec appels `get_client_history` et `get_price`.
+> **État de vérification, en toute transparence.** Le code a été assemblé dans un environnement *sans Docker, sans PostgreSQL, sans Redis et sans accès au LLM*.
+> Vérifié par exécution : compilation TypeScript stricte (API + worker + agent + web), **153 assertions unitaires** (règles métier, garde-fou, routage du graphe, horaires/A-B des relances).
+> Vérifié lors d'une session précédente sur PostgreSQL 16 + Redis 7 : seeder (80/120/320/449/12/12) et **37 tests d'outils** (`npm run test:tools`, dont la concurrence sur la dernière unité).
+> **Non exécuté ici** : `docker compose up`, le graphe avec le vrai LLM, le worker sur Redis, le replay des 40 conversations, le build Vite. La section [Vérifier en 5 minutes](#vérifier-en-5-minutes) donne les commandes exactes.
 
 ## 1. Problème
-
-Un commerçant marocain reçoit 150 à 300 messages par jour sur WhatsApp/chat. Il répond
-quand il peut, et ne relance jamais les paniers abandonnés faute de temps.
+Un commerçant marocain reçoit 150 à 300 messages/jour (« chhal taman ? », « vous livrez à Fès ? »). Il répond le soir, le client a acheté ailleurs, et personne ne relance les paniers abandonnés.
 
 ## 2. Solution
-
-Kenza est un agent commercial autonome : il qualifie le besoin, cherche dans le vrai
-catalogue, vérifie le vrai stock, calcule la vraie livraison, gère le panier, crée
-réellement la commande en base, relance les paniers abandonnés via une file de tâches,
-et transfère à un humain avec le contexte complet dès qu'il sort de son domaine.
+Kenza est un agent autonome branché sur la conversation : il comprend (fr / ar / darija, fautes comprises), cherche dans le **vrai** catalogue, vérifie le **vrai** stock, calcule la **vraie** livraison, gère le panier, **crée la commande en base**, relance les paniers abandonnés via BullMQ, et **transfère à l'humain avec le contexte complet** dès qu'il sort de son domaine.
 
 ## 3. Architecture
 
 ```
-React (simulateur chat + dashboard)
-        │ WebSocket / REST
-Fastify API ── LangGraph (StateGraph) ──► Tools (10, déterministes) ──► PostgreSQL
-        │                                                                  ▲
-        └── Redis (état court) ── BullMQ (relances) ── Worker Node ───────┘
+React (chat WebSocket + dashboard) ──► Fastify ──► LangGraph StateGraph ──► Tools (10, déterministes) ──► PostgreSQL
+                                          │                 │                                               ▲
+                                          │                 └── checkpointer PostgreSQL (mémoire longue)     │
+                                          └── Redis (état court, cache intention) ── BullMQ ── Worker ───────┘
 ```
 
-### LLM vs Agent vs Orchestrateur vs Tool
+| Rôle | Où |
+|---|---|
+| **LLM** = moteur de langage (endpoint OpenAI-compatible, aucun code fournisseur) | `packages/agent/llm.ts` |
+| **Agent** = LLM + instructions + état + outils | `packages/agent/nodes/*` |
+| **Orchestrateur** = contrôle du workflow | `packages/agent/graph.ts` (LangGraph.js) |
+| **Tool** = fonction déterministe qui lit/écrit PostgreSQL | `packages/agent/tools/*` |
+| **Base** = source de vérité | `packages/db/schema.sql` |
 
-- **LLM** : moteur de langage (endpoint Numeos, compatible OpenAI — `LLM_BASE_URL` /
-  `LLM_API_KEY` / `LLM_MODEL`, aucun code spécifique à un fournisseur).
-- **Agent** : LLM + prompt + état (`KenzaState`) + tools + capacité d'action.
-- **Orchestrateur** : `packages/agent/graph.ts`, un `StateGraph` LangGraph.js explicite.
-- **Tool** : fonction déterministe dans `packages/agent/tools/*.ts` qui lit/écrit
-  PostgreSQL. Le LLM n'accède **jamais** directement à la base.
+Le LLM n'accède jamais à la base ; il ne choisit que *quel tool appeler*. Prix, stock, frais, délais, totaux, remises et création de commande sont calculés **en code**.
 
 ### Graphe LangGraph
 
 ```
-START → intent
-intent ─┬─(intention hors domaine/réclamation, ou confiance très basse traitée en aval)→ escalation
-        ├─(besoin catalogue/stock/livraison/panier/commande)→ catalogue → conversation
-        └─(clarification simple)→ conversation
-conversation → guardrail
-guardrail ─┬─ valid   → END
-           ├─ retry   → conversation (1 seul essai supplémentaire)
-           └─ escalate→ escalation
-escalation → END
+START → multimodal ─(panne STT/vision)──────────────────────────► escalation → END
+            └────► intent ─(règle d'escalade : ICE, réclamation, remise>10 %, ville inconnue, réassort…)► escalation
+                     ├─(inconnu / confiance faible)────► conversation   (question de clarification)
+                     └─(besoin métier)──► catalogue ─(tool impose escalade)► escalation
+                                             └──► conversation ─(LLM KO)► escalation
+                                                       └──► guardrail ─ PASS ─► respond → END
+                                                                 ├─ FAIL (1er) ─► conversation (retry unique)
+                                                                 └─ FAIL (2e) ──► escalation → END
 ```
+`relance` vit dans le **worker** (`nodes/relance_node.ts`), hors boucle synchrone.
 
-Nœuds : `intent_node`, `catalogue_node` (boucle de tool-calling réelle), `conversation_node`
-(rédaction à partir des `facts` uniquement), `guardrail_node`, `escalation_node`.
-Le nœud `multimodal_node` s'exécute en amont du graphe (audio/image → texte) car il
-transforme l'entrée brute avant construction de l'état. Le nœud `relance` n'est **pas**
-dans la boucle synchrone : il vit dans `packages/worker` (BullMQ), conformément à
-l'interdiction du `setTimeout()` côté API.
+| Nœud | Responsabilité |
+|---|---|
+| `multimodal` | audio → STT (`/audio/transcriptions`) ; image → vision → attributs → recherche catalogue (jamais de référence devinée, confirmation demandée) ; panne → dégradation propre + escalade |
+| `intent` | 18 intentions + langue + difficulté, JSON validé par Zod ; règles déterministes prioritaires sur le LLM ; confiance < 0,5 → `inconnu` |
+| `catalogue` | étapes déterministes (historique, livraison, remise plafonnée, alternative garantie en cas de rupture) + boucle de tool-calling LLM ; produit les `facts` sourcés |
+| `conversation` | rédige **uniquement** à partir des `facts` validés, dans la langue du dernier message |
+| `guardrail` | tout nombre doit être justifié par un fact ; refs inventées, COD non autorisé, réassort, remboursement espèces, remise > plafond → rejet, 1 retry, puis escalade |
+| `escalation` | crée l'escalade (motif + contexte complet), répond par un message sûr trilingue sans chiffre |
 
 ### Zéro hallucination métier
-
-Chaque tool retourne des `facts` typés avec leur source (`db:products.prix_mad`, etc.).
-`guardrail_node` (`packages/agent/guardrails/guardrail.ts`) extrait tous les nombres du
-brouillon final et vérifie qu'ils sont justifiables par un fact, le panier ou la
-livraison calculée — sinon la réponse est rejetée (1 retry max, puis escalade). La
-remise est plafonnée **en code** (`apply_discount`, plancher 10%), jamais seulement
-dans le prompt.
+Chaque tool écrit des `facts` `{type, value, source: "db:…", ref}`. Le guardrail relit le **texte final** et refuse tout nombre non justifié (`packages/agent/guardrails/guardrail.ts`, testé dans `guardrail.test.ts`). Le plancher de remise (10 %) est dans `apply_discount` ; `create_order` relit panier/remise/frais en base et ne fait jamais confiance au LLM. Aucune date de réassort n'est jamais annoncée (`delai_reassort_jours` n'est lu nulle part côté réponse).
 
 ### Mémoire
+- **Courte** : Redis (`memory.ts`) + cache des classifications d'intention.
+- **Longue** : checkpointer PostgreSQL LangGraph ; `thread_id = client_id` (ou téléphone). Un même client qui revient dans une **nouvelle conversation**, même après `docker compose restart`, retrouve son fil + son historique de commandes (`get_client_history`).
+- Panier et remise vivent en base (`conversations.cart`) : « finalement L » modifie le panier (`change_size`), ne repart pas de zéro.
 
-- **Courte** (Redis, `packages/agent/memory.ts`) : état conversationnel volatile.
-- **Longue** (checkpointer PostgreSQL de LangGraph, `PostgresSaver`) : le `thread_id`
-  est basé sur `client_id` (ou `telephone` à défaut), donc un client qui revient après
-  un `docker compose restart` retrouve son fil de conversation.
+### Relances (EX-05)
+`scanAbandonedCarts` (job scheduler BullMQ, toutes les 15 s) sélectionne les conversations avec panier non converti, silencieuses depuis > 24 h (`DEMO_DELAY_MINUTES=1` → 1 min), non reprises par un humain, **jamais relancées**. Le job `send-relance` est retardé jusqu'à l'ouverture (lun→sam 10h-20h, fuseau Africa/Casablanca) — la relance nocturne est reportée. `relance_node` re-tarife le panier en base, ignore les articles épuisés, choisit A/B de façon déterministe, personnalise dans la langue du client (reformulation LLM contrôlée, repli sur gabarit) et journalise dans `relances`. Le résultat (`sent → replied → converted`) alimente l'A/B du dashboard.
 
-### Guardrails, escalade
+## 3 bis. Design : identité « Majorelle »
+Bleu de jardin, safran et plâtre à la chaux ; un seul motif, l'**étoile à 8 branches du zellige (khatam)**, qui sert de logo, de fond de conversation et de nœud du graphe.
+- **Le cerveau de Kenza** (`AgentGraph.tsx`) : le vrai graphe LangGraph rendu en direct. Chaque étoile s'allume quand le nœud vient réellement de s'exécuter (événements WebSocket), avec les outils appelés, leurs arguments et résultats, et le sceau « Chiffres vérifiés » du garde-fou.
+- **Cartes produit** (`ProductCards.tsx`) construites uniquement à partir des résultats d'outils (prix promo barré, stock, alternative en cas de rupture).
+- Réponses révélées mot à mot, texte bidirectionnel (`dir="auto"`) pour l'arabe, ticket de panier, tableau « Aujourd'hui » (phrase-bilan, anneaux, parcours des conversations, test A/B).
+- Accessibilité : focus visible, `prefers-reduced-motion` respecté, responsive jusqu'au mobile. Polices Google Fonts avec repli système.
 
-Voir `packages/agent/guardrails/guardrail.ts` et `packages/agent/nodes/escalation_node.ts`.
-L'escalade écrit en base (`escalations`), passe `conversations.needs_human = true`
-(l'agent doit alors ignorer cette conversation) et transmet motif + contexte complet
-(derniers messages, panier, client) : le client ne se répète pas.
+![Chat](docs/design-chat.png)
+![Aujourd'hui](docs/design-overview.png)
 
-### Relances (BullMQ)
-
-`packages/worker/src/scanner.ts` scanne les conversations à panier non vide, inactives
-depuis plus de `DEMO_DELAY_MINUTES` (ou 24h par défaut), sans relance déjà planifiée.
-Une relance est plannifiée une seule fois par panier, avec variante A/B alternée, et
-reportée si elle tombe hors horaires boutique (10h-20h, lundi-samedi).
-`packages/worker/src/index.ts` consomme la file et envoie le message (inséré comme
-message `agent` en base), visible dans le chat, le dashboard et la table `relances`.
-
-## 4. Base de données
-
-Schéma : `packages/db/schema.sql`. Seeder : `packages/db/seeder/seed.ts` — idempotent
-(`ON CONFLICT DO NOTHING` sur les tables à clé naturelle), lit `data/*.csv` sans jamais
-les modifier, et **échoue au démarrage (FAIL FAST)** si les volumes ne correspondent
-pas à `80/120/320/449/12/12`.
-
-## 5. Installation
+## 4. Installation
 
 ```bash
-cp .env.example .env
-# Renseigner LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (endpoint Numeos fourni)
+cp .env.example .env          # renseigner LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 docker compose up --build
 ```
+Web : http://localhost:5173 · API : http://localhost:4000/health. Le schéma et le seeder s'exécutent automatiquement au démarrage de l'API (idempotent ; **FAIL FAST** si les volumes ≠ 80/120/320/449/12/12). Les fichiers de `data/` ne sont jamais modifiés (montés en lecture seule).
 
-- API : http://localhost:4000 (santé : `/health`)
-- Web : http://localhost:5173
-- Le seeder tourne automatiquement au démarrage du service `api` (voir
-  `apps/api/Dockerfile`), aucune migration manuelle requise.
+Variables : voir `.env.example`. **Ne commitez jamais `.env`.**
+Démo de nuit : `DEMO_IGNORE_SHOP_HOURS=1` désactive uniquement le report aux horaires d'ouverture.
 
-### Variables d'environnement (`.env.example`)
-
-`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `DATABASE_URL`, `REDIS_URL`,
-`DEMO_DELAY_MINUTES` (réduit le seuil panier abandonné de 24h à 1 min pour la démo),
-`SHOP_OPEN_HOUR` / `SHOP_CLOSE_HOUR`, `DISCOUNT_MAX_PCT`.
-
-## 6. Tests
+## 5. Tests
 
 ```bash
-npm run test:tools    # tools sans LLM (stock, remise, livraison, commande transactionnelle...)
-npm run test:replay   # rejoue les 40 conversations, assertions programmatiques
+npm run typecheck        # TypeScript strict : agent, API, worker, web
+npm run test:unit        # règles (54), guardrail + routage (51), horaires/A-B (9) — sans base ni LLM
+npm run test:tools       # 37 tests d'outils sur PostgreSQL (base seedée requise)
+npm run test:replay      # rejoue les 40 conversations avec le vrai LLM, assertions programmatiques
+```
+`test:replay` vérifie sans jamais demander au LLM si une réponse est « correcte » : intention ≥ 85 %, langue, aucun nombre hors facts, rupture → alternative en stock, aucun réassort, remise > 10 % → escalade, ville inconnue / ICE / réclamation / remboursement espèces → escalade, changement de taille → panier mis à jour. Rapport : `replay-report.json` ; les commandes/stock de test sont annulés.
+
+### Vérifier en 5 minutes
+```bash
+docker compose up --build -d && docker compose logs api | grep "\[seed\]"     # 80/120/320/449/12/12
+docker compose exec api npm run test:tools && docker compose exec api npm run test:replay
 ```
 
-`scripts/replay-conversations.ts` ne demande **jamais** au LLM si une réponse est
-"correcte" : il vérifie mécaniquement langue==langue client, absence de nombre hors
-facts, absence de promesse de réassort, alternative proposée en cas de rupture,
-escalade sur ville inconnue / réclamation / remise hors plancher, mise à jour du
-panier sur changement de taille, et un seuil de précision d'intention ≥ 85%.
+## 6. EX-01 → EX-08
 
-### Résultats vérifiés
+| Exigence | Comment la démontrer |
+|---|---|
+| EX-01 | Simulateur → client → « salam chhal taman dyal robe vert olive ? » → ville → « oui c'est bon » |
+| EX-02 | Panneau « Trace de l'agent » : `search_catalog()`, `check_stock()`, `get_price()`… avec arguments/résultats ; aucun catalogue dans les prompts |
+| EX-03 | Onglet **Commandes** → filtre « Kenza uniquement » (`created_by = agent`) ; ou `SELECT * FROM orders WHERE created_by='agent'` |
+| EX-04 | Discuter, `docker compose restart`, « Nouvelle conversation » avec le même client : historique rappelé |
+| EX-05 | Laisser un panier 1 min → onglet **Relances** + message « Relance automatique » dans le chat (BullMQ → worker → `relances`) |
+| EX-06 | « Facture avec ICE », « 30 % ou j'achète ailleurs », « Essaouira » → onglet **Escalades** (contexte complet, *Reprendre la main*) |
+| EX-07 | **Vue d'ensemble** : conversations, conversion, commandes, escalades, CA agent, A/B |
+| EX-08 | Trois scénarios en fr / ar / darija (bouton « Darija (fautes) » : `ch7al taman had sac kain f stock 3afak`) |
 
-- `npx tsc --noEmit` : OK
-- `npm run test:tools` : 37 tests passés
-- `npx tsx packages/agent/rules.test.ts` : 54 tests passés
-- `npx vite build --config apps/web/vite.config.ts` : OK
-- `docker compose config --quiet` : OK
-- Seeder : `80/120/320/449/12/12`, contrôle FAIL FAST validé
+## 7. Script de démo (2 min)
+1. *Darija* : « salam chhal taman dyal robe vert olive ? » → trace : intent → search_catalog → check_stock → get_price → guardrail PASS.
+2. Taille + « tawsil l Casa » → frais/délai issus de `shipping_rates`. « Finalement L » → panier recalculé.
+3. « Oui c'est bon, à la livraison » → commande créée → onglet Commandes (`agent`).
+4. Rupture : « Vous avez la REF-0019 ? Quand est-ce que ça revient ? » → alternative réelle, **aucune date**, escalade.
+5. « 30 % sinon j'achète ailleurs » puis « facture ICE » → Escalades → *Reprendre la main*.
+6. Panier laissé 1 min → relance dans le chat + onglet Relances. Fin sur *Activité agent*.
 
-## 7. EX-01 → EX-08
+## 8. Limites connues
+- Le graphe complet n'a pas été exécuté contre le vrai endpoint LLM dans l'environnement de génération : les ajustements de prompts après `test:replay` sont probables.
+- STT : suppose `/audio/transcriptions` sur l'endpoint ; sinon dégradation propre + escalade (le MVP texte n'est pas affecté).
+- Le web tourne en mode dev Vite (suffisant pour la démo). WhatsApp Cloud API non branché : abstraction de canal = simulateur WebSocket (`ws.ts`).
+- Les tests de concurrence des outils exigent PostgreSQL.
 
-| # | Exigence | Où le vérifier |
-|---|---|---|
-| EX-01 | Conversation complète jusqu'à la commande | Simulateur de chat, onglet Commandes du dashboard |
-| EX-02 | Tools réels, jamais de catalogue dans le prompt | `packages/agent/tools/`, trace visible dans le chat |
-| EX-03 | Commande créée en base, `created_by='agent'` | `packages/agent/tools/order.ts`, onglet Commandes |
-| EX-04 | Mémoire par client, survit à un restart | Checkpointer PostgreSQL (`graph.ts`), thread_id = client_id |
-| EX-05 | Relance déclenchée par l'agent | `packages/worker/`, onglet Relances, `DEMO_DELAY_MINUTES=1` |
-| EX-06 | Escalade avec contexte complet | `escalation_node.ts`, onglet Escalades |
-| EX-07 | Dashboard (conversations, conversion, commandes, escalades) | `apps/web/src/Dashboard.tsx` |
-| EX-08 | Français / arabe / darija | `packages/agent/prompts/{fr,ar,darija}` |
-
-## 8. Scénario de démo (2 minutes)
-
-1. Message darija mal orthographié ("chhal taman dyal ...") → recherche produit.
-2. Stock + prix réels affichés, avec trace des tool calls dans le chat.
-3. Ville de livraison → frais/délai réels calculés.
-4. Confirmation → commande créée, visible immédiatement dans le dashboard.
-5. Nouveau message "finalement en L" → panier mis à jour, total recalculé.
-6. Demande d'un produit en rupture (ex. `REF-0019`) → alternative réelle proposée,
-   aucun réassort promis.
-7. Demande de 30% de remise → refus + escalade visible dans le dashboard.
-8. Laisser un panier non finalisé, attendre `DEMO_DELAY_MINUTES` → relance visible
-   dans le chat et la table `relances`.
-
-## 9. Limites connues
-
-- Les fonctions audio/image dépendent des endpoints STT/vision configurés par le
-  fournisseur LLM et disposent d'une dégradation propre vers l'escalade.
-- Le frontend est volontairement sobre et orienté démonstration opérationnelle.
-- WhatsApp Cloud API n'est pas branché (hors périmètre assumé, cf. cahier des charges).
-
-## 10. Bonus non couverts
-
-Notes vocales et reconnaissance d'image sont câblées (`multimodal_node.ts`) avec
-dégradation propre si le service échoue, mais n'ont pas pu être testées faute
-d'accès réseau. A/B testing des relances est implémenté (alternance A/B + colonne
-`resultat` pour mesurer la conversion).
+## 9. Bonus livrés
+Notes vocales (STT), reconnaissance d'image (vision → catalogue), négociation encadrée (plancher en code), A/B automatique des relances.

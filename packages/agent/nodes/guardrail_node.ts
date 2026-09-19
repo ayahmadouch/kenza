@@ -17,7 +17,7 @@ export async function guardrail_node(state: KenzaState): Promise<Partial<KenzaSt
 }
 
 /** valide -> respond ; invalide 1re fois -> retry conversation ; invalide encore -> escalade. */
-export function routeAfterGuardrail(state: Pick<KenzaState, "guardrail">): "valid" | "retry" | "escalate" {
+export function routeAfterGuardrail(state: KenzaState): "valid" | "retry" | "escalate" {
   if (state.guardrail?.ok) return "valid";
   return (state.guardrail?.retries ?? 0) <= 1 ? "retry" : "escalate";
 }
